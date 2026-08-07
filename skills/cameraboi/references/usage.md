@@ -102,6 +102,13 @@ Rules of thumb: `--max` for anything with text on it (documents, whiteboards, sc
 labels, serial numbers). Default 1080p for scenes and objects. Lower `-r` only when the
 file size actually matters, such as a long burst.
 
+Captures wider than 2000px automatically get a 1568px-wide `<name>-model.jpg` companion,
+printed as the **last** stdout line — Read that one for scenes (a fraction of the tokens).
+For fine text, Read the full-res original (the line above); the model copy trades detail
+for size. `--full` (alias `--no-model`) skips the copy entirely — reach for it when the
+user explicitly asks for full resolution. Successful snaps also open in Preview for the
+user (`--no-open` / `CAMERABOI_NO_OPEN=1` to suppress).
+
 ## 6. Pixel format constraint (already handled — context only)
 
 The IPEVO V4K rejects `yuv420p` input. Supported input formats are `uyvy422, yuyv422,
@@ -129,9 +136,11 @@ $ ~/Documents/work/cameraBoi/scripts/cameraboi snap
 ```
 $ ~/Documents/work/cameraBoi/scripts/cameraboi snap --max -o ~/Pictures/cameraboi/scan/page-01.jpg
 /Users/you/Pictures/cameraboi/scan/page-01.jpg
+/Users/you/Pictures/cameraboi/scan/page-01-model.jpg
 ```
 
-→ Read it → transcribe → "Ready for page 2 whenever you turn it."
+→ Read the **full-res** `page-01.jpg` (this is a text transcription — the model copy
+trades away the detail you need) → transcribe → "Ready for page 2 whenever you turn it."
 
 ### "Watch me do this for 10 seconds"
 

@@ -94,7 +94,7 @@ Run this whenever a capture reports a missing device, or before scripting an ind
 Captures a single still image.
 
 ```bash
-scripts/cameraboi snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--max]
+scripts/cameraboi snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--max] [--full] [--no-open]
 ```
 
 | Flag | Default | Description |
@@ -104,6 +104,15 @@ scripts/cameraboi snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--max]
 | `-r WxH` | `1920x1080` (at 30 fps) | Capture resolution |
 | `--warmup N` | `15` frames | Frames to pull before keeping one |
 | `--max` | off | Try the V4K's high-resolution photo mode |
+| `--full` | off | Full resolution only — skip the model-sized copy (alias: `--no-model`) |
+| `--no-open` | off | Do not open the capture in Preview (also `CAMERABOI_NO_OPEN=1`) |
+
+On success the capture **opens in Preview** so the human sees the shot immediately. If the
+capture is wider than 2000px (typically `--max`), snap also writes a **model-sized copy** —
+a 1568px-wide `<name>-model.jpg` (override the width with `CAMERABOI_MODEL_MAX`) — and
+prints it as the **last** stdout line. Vision consumers should Read the model copy for
+scenes and the full-res original (the line above) for fine text; `--full` skips the copy
+when full resolution is explicitly wanted.
 
 **Warm-up is why the images are usable.** A USB camera's first frames are captured before
 auto-exposure and auto-white-balance converge, so a naive single-frame grab is typically

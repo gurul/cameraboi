@@ -17,9 +17,19 @@ without Reading is pointless — the Read is where the seeing happens.
 ## The core loop — a still photo
 
 1. Bash: `~/Documents/work/cameraBoi/scripts/cameraboi snap`
-2. The **last stdout line is the absolute path** of the JPEG that was written.
+2. The **last stdout line is the path to Read**. High-res captures (wider than 2000px,
+   e.g. `--max`) also get a model-sized `<name>-model.jpg` copy printed last — Read that
+   one; the full-res original is the line above it.
 3. **Read that path.** The Read tool renders JPEGs — that image becomes Claude's vision.
 4. Describe / analyze / act on what is actually in the frame.
+
+On success the capture also **opens in Preview automatically** so the user sees what was
+taken (suppress with `--no-open` or `CAMERABOI_NO_OPEN=1`).
+
+**Full resolution on request:** when the user explicitly asks for full resolution / full
+quality / fine detail — or the task is transcribing fine text from a `--max` scan — use
+`snap --full` (skips the model copy) or Read the full-res original (the line above the
+model path) instead of the model copy.
 
 ```bash
 ~/Documents/work/cameraBoi/scripts/cameraboi snap
@@ -70,7 +80,7 @@ a numeric index:
 | Command | Flags | Notes |
 |---|---|---|
 | `devices` | — | Lists attached video + audio devices with their indices |
-| `snap` | `-o FILE` `-d DEVICE` `-r WxH` `--warmup N` `--max` | Still capture. Defaults: IPEVO V4K, 1920x1080@30, 15 warmup frames (lets auto-exposure settle), out `~/Pictures/cameraboi/snap-YYYYmmdd-HHMMSS.jpg`. `--max` attempts the V4K high-res photo mode, degrading gracefully |
+| `snap` | `-o FILE` `-d DEVICE` `-r WxH` `--warmup N` `--max` `--full` `--no-open` | Still capture. Defaults: IPEVO V4K, 1920x1080@30, 15 warmup frames (lets auto-exposure settle), out `~/Pictures/cameraboi/snap-YYYYmmdd-HHMMSS.jpg`. `--max` attempts the V4K high-res photo mode, degrading gracefully. Opens in Preview on success. Captures >2000px wide emit a 1568px `-model.jpg` copy as the last stdout line; `--full` (alias `--no-model`) skips it — use when the user explicitly wants full resolution |
 | `record` | `-t SECONDS` (required) `-o FILE` `-d DEVICE` `-r WxH` `--audio` | H.264 mp4, faststart, 1920x1080@30 default. `--audio` mixes in the device mic |
 | `burst` | `-n COUNT` (required) `-i SECONDS` `-o DIR` | N stills at an interval — timelapse / watching a slow process |
 | `frames` | `VIDEO` (positional) `-n N` `-o DIR` `--sheet` | Extracts N evenly-spaced frames (default 12); `--sheet` also tiles them into contact sheet(s) |

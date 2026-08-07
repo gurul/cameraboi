@@ -23,6 +23,10 @@ readonly EVENTS_FILE="$SESSIONS_DIR/events.jsonl"
 readonly EVENT_STDERR_CAP=4096
 readonly LOGS_DEFAULT_TAIL=20
 readonly LOGS_MAX_TAIL=200
+# A model-sized (downscaled) copy is emitted when the capture is wider than
+# MODEL_TRIGGER_WIDTH; full resolution is wasted tokens for vision models.
+readonly MODEL_MAX_WIDTH="${CAMERABOI_MODEL_MAX:-1568}"
+readonly MODEL_TRIGGER_WIDTH=2000
 
 # ---------------------------------------------------------------- utilities --
 
@@ -49,6 +53,36 @@ abspath() {
 }
 
 ensure_parent_dir() { mkdir -p "$(dirname "$1")"; }
+
+# Open a file in Preview (macOS). Never fails the capture; no-op headless.
+open_preview() {
+  open -a Preview "$1" 2>/dev/null || true
+}
+
+# Pixel width of an image, empty on failure.
+image_width() {
+  ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=nw=1:nk=1 "$1" 2>/dev/null || true
+}
+
+# If the image is wider than MODEL_TRIGGER_WIDTH, write a MODEL_MAX_WIDTH-wide
+# JPEG copy next to it ("<name>-model.jpg") and print that path; else print
+# nothing. Downscale failure is non-fatal (the full-res path still works).
+make_model_copy() {
+  local src="$1" width base model
+  width="$(image_width "$src")"
+  [[ "$width" =~ ^[0-9]+$ ]] || return 0
+  [ "$width" -gt "$MODEL_TRIGGER_WIDTH" ] || return 0
+  case "$(basename "$src")" in
+    *.*) base="${src%.*}" ;;
+    *)   base="$src" ;;
+  esac
+  model="${base}-model.jpg"
+  if run_ffmpeg "model-sized downscale" -- \
+      -i "$src" -vf "scale=${MODEL_MAX_WIDTH}:-2" -q:v 4 -y "$model" \
+      && [ -s "$model" ]; then
+    printf '%s\n' "$model"
+  fi
+}
 
 tcc_guidance() {
   cat >&2 <<'EOS'
@@ -269,7 +303,7 @@ resolve_mode() {
 cmd_snap() {
   need_cmd ffmpeg
   local out="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE"
-  local warmup="$DEFAULT_WARMUP" want_max=0
+  local warmup="$DEFAULT_WARMUP" want_max=0 no_open=0 no_model=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -278,10 +312,13 @@ cmd_snap() {
       -r|--size)    size="${2:-}";   [ -n "$size" ] || die "-r requires WxH";         shift 2 ;;
       --warmup)     warmup="${2:-}"; shift 2 ;;
       --max)        want_max=1; shift ;;
+      --no-open)    no_open=1; shift ;;
+      --full|--no-model) no_model=1; shift ;;
       -h|--help)    usage; return 0 ;;
       *) die "snap: unknown option '$1' (see: $PROG help)" ;;
     esac
   done
+  [ "${CAMERABOI_NO_OPEN:-0}" = "1" ] && no_open=1
 
   [[ "$warmup" =~ ^[0-9]+$ ]] && [ "$warmup" -ge 1 ] || die "--warmup must be a positive integer"
   [[ "$size" =~ ^[0-9]+x[0-9]+$ ]] || die "-r must look like 1920x1080"
@@ -327,7 +364,15 @@ cmd_snap() {
   fi
   [ -s "$out" ] || { log "$PROG: capture produced an empty file"; exit 1; }
 
+  [ "$no_open" -eq 0 ] && open_preview "$out"
+
+  # Full-res path first; model-sized path (if one was made) LAST, so vision
+  # consumers Read the final printed line.
+  local model=""
+  [ "$no_model" -eq 0 ] && model="$(make_model_copy "$out")"
   printf '%s\n' "$out"
+  [ -n "$model" ] && { log "model-sized copy (Read this one): $model"; printf '%s\n' "$model"; }
+  return 0
 }
 
 # ------------------------------------------------------------------- record --
@@ -431,7 +476,7 @@ cmd_burst() {
   for (( i = 1; i <= count; i++ )); do
     shot="$(printf '%s/shot-%03d.jpg' "$outdir" "$i")"
     log "burst: $i/$count -> $shot"
-    if ! bash "$0" snap -d "$device" -r "$size" -o "$shot" >/dev/null; then
+    if ! bash "$0" snap -d "$device" -r "$size" -o "$shot" --no-open --no-model >/dev/null; then
       log "$PROG: burst aborted at shot $i/$count"
       exit 1
     fi
@@ -723,6 +768,13 @@ COMMANDS
                   lets auto-exposure / auto-white-balance settle
       --max       use the highest resolution the device advertises
                   (falls back to -r / the default if probing fails)
+      --no-open   do not open the capture in Preview (default: opens on success;
+                  also suppressed by CAMERABOI_NO_OPEN=1)
+      --full      full resolution only - skip the model-sized copy entirely
+                  (alias: --no-model). Without it, captures wider than
+                  ${MODEL_TRIGGER_WIDTH}px get a ${MODEL_MAX_WIDTH}px-wide "<name>-model.jpg" copy,
+                  printed as the LAST stdout line - vision consumers Read that
+                  one; the full-res original stays on disk (line above).
 
   record -t SECONDS [-o FILE] [-d DEVICE] [-r WxH] [--audio]
       Record H.264 mp4 (+faststart), default ${DEFAULT_SIZE}@${DEFAULT_FPS}.
