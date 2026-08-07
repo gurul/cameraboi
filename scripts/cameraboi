@@ -431,7 +431,7 @@ cmd_burst() {
   for (( i = 1; i <= count; i++ )); do
     shot="$(printf '%s/shot-%03d.jpg' "$outdir" "$i")"
     log "burst: $i/$count -> $shot"
-    if ! "$0" snap -d "$device" -r "$size" -o "$shot" >/dev/null; then
+    if ! bash "$0" snap -d "$device" -r "$size" -o "$shot" >/dev/null; then
       log "$PROG: burst aborted at shot $i/$count"
       exit 1
     fi
