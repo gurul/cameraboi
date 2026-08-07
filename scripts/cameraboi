@@ -1,0 +1,801 @@
+#!/usr/bin/env bash
+#
+# cameraboi — camera capture CLI for macOS (AVFoundation via ffmpeg).
+#
+# Contract:
+#   * The LAST stdout line(s) are the absolute path(s) of produced artifacts.
+#   * All human-facing progress/diagnostics go to stderr.
+#   * Non-zero exit + a clear stderr message on any failure.
+#
+set -euo pipefail
+
+readonly PROG="${0##*/}"
+readonly DEFAULT_DEVICE="IPEVO V4K"
+readonly DEFAULT_SIZE="1920x1080"
+readonly DEFAULT_FPS="30"
+readonly DEFAULT_WARMUP="15"
+readonly DEFAULT_PIXFMT="uyvy422"
+readonly CAPTURE_DIR="${CAMERABOI_DIR:-$HOME/Pictures/cameraboi}"
+readonly SHEET_MAX_WIDTH=2000
+readonly SHEET_MAX_TILES=16
+readonly SESSIONS_DIR="$CAPTURE_DIR/.sessions"
+readonly EVENTS_FILE="$SESSIONS_DIR/events.jsonl"
+readonly EVENT_STDERR_CAP=4096
+readonly LOGS_DEFAULT_TAIL=20
+readonly LOGS_MAX_TAIL=200
+
+# ---------------------------------------------------------------- utilities --
+
+log()  { printf '%s\n' "$*" >&2; }
+die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
+
+timestamp() { date +%Y%m%d-%H%M%S; }
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1 (install with: brew install ffmpeg)"
+}
+
+# Absolute, symlink-resolved path. The parent directory must already exist.
+abspath() {
+  local p="$1" d b
+  case "$p" in
+    /*) ;;
+     *) p="$PWD/$p" ;;
+  esac
+  d="$(dirname "$p")"
+  b="$(basename "$p")"
+  [ -d "$d" ] || die "directory does not exist: $d"
+  ( cd "$d" && printf '%s/%s\n' "$(pwd -P)" "$b" )
+}
+
+ensure_parent_dir() { mkdir -p "$(dirname "$1")"; }
+
+tcc_guidance() {
+  cat >&2 <<'EOS'
+
+--------------------------------------------------------------------------
+The camera could not be opened. On macOS this is almost always a privacy
+(TCC) permission problem for the app running this script.
+
+  System Settings -> Privacy & Security -> Camera
+    -> enable the toggle for your terminal app (Terminal, iTerm, Ghostty,
+       VS Code, Claude Code, ...)
+
+Then FULLY QUIT and reopen that app - the permission is only picked up on
+a fresh process launch.
+
+Other things to check:
+  * the camera is plugged in and not in use by another app (Zoom, Photo
+    Booth, FaceTime) - AVFoundation devices are exclusive-access
+  * `cameraboi devices` lists the device you asked for
+--------------------------------------------------------------------------
+EOS
+}
+
+# Run ffmpeg, keeping its stderr visible, and return its exit status.
+# Usage: run_ffmpeg <description> -- <ffmpeg args...>
+FFMPEG_STDERR=""
+run_ffmpeg() {
+  local desc="$1"; shift
+  [ "${1:-}" = "--" ] && shift
+  local errfile status=0
+  errfile="$(mktemp -t cameraboi-ff)"
+  if ffmpeg -hide_banner -loglevel error -nostdin "$@" 2>"$errfile"; then
+    status=0
+  else
+    status=$?
+  fi
+  FFMPEG_STDERR="$(cat "$errfile")"
+  rm -f "$errfile"
+  # ffmpeg warnings/errors stay visible on stderr.
+  [ -n "$FFMPEG_STDERR" ] && printf '%s\n' "$FFMPEG_STDERR" >&2
+  [ "$status" -ne 0 ] && log "$PROG: ffmpeg failed during: $desc"
+  return "$status"
+}
+
+# ------------------------------------------------------------ event logging --
+# hwlog-inspired (github.com/gurul/hardware-logging) structured capture log:
+# every capture command appends one bounded JSONL event so failures can be
+# debugged from recorded evidence instead of reruns. Never breaks a capture —
+# all log-write failures are swallowed.
+
+EVENT_CMD=""
+EVENT_ARGS=""
+EVENT_DEVICE=""
+EVENT_ARTIFACT=""
+EVENT_START=0
+
+# stdin -> JSON string content (no surrounding quotes)
+json_escape() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read())[1:-1])'
+  else
+    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk 'NR>1 {printf "\\n"} {printf "%s", $0}'
+  fi
+}
+
+log_event() {
+  local exit_code="$1"
+  [ -n "$EVENT_CMD" ] || return 0
+  local end dur ts args_esc dev_esc art_esc err_esc
+  end="$(date +%s)"
+  dur=$(( (end - EVENT_START) * 1000 ))
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$SESSIONS_DIR" 2>/dev/null || return 0
+  chmod 700 "$SESSIONS_DIR" 2>/dev/null || true
+  args_esc="$(printf '%s' "$EVENT_ARGS" | json_escape 2>/dev/null || true)"
+  dev_esc="$(printf '%s' "$EVENT_DEVICE" | json_escape 2>/dev/null || true)"
+  art_esc="$(printf '%s' "$EVENT_ARTIFACT" | json_escape 2>/dev/null || true)"
+  err_esc="$(printf '%s' "$FFMPEG_STDERR" | head -c "$EVENT_STDERR_CAP" | json_escape 2>/dev/null || true)"
+  printf '{"ts":"%s","cmd":"%s","device":"%s","args":"%s","exit_code":%d,"duration_ms":%d,"artifact":"%s","ffmpeg_stderr":"%s"}\n' \
+    "$ts" "$EVENT_CMD" "$dev_esc" "$args_esc" "$exit_code" "$dur" "$art_esc" "$err_esc" \
+    >> "$EVENTS_FILE" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------ devices --
+
+# Raw device listing. ffmpeg exits non-zero by design here; stderr holds the list.
+raw_device_list() {
+  ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 || true
+}
+
+# Emit "index<TAB>name" for a section: video | audio
+device_lines() {
+  local section="$1"
+  raw_device_list | awk -v want="$section" '
+    /AVFoundation video devices:/ { sect="video"; next }
+    /AVFoundation audio devices:/ { sect="audio"; next }
+    sect == want {
+      # strip the "[AVFoundation indev @ 0x...] " prefix
+      line = $0
+      sub(/^\[AVFoundation[^]]*\][[:space:]]*/, "", line)
+      if (match(line, /^\[[0-9]+\][[:space:]]/)) {
+        idx = line
+        sub(/^\[/, "", idx); sub(/\].*$/, "", idx)
+        name = line
+        sub(/^\[[0-9]+\][[:space:]]*/, "", name)
+        printf "%s\t%s\n", idx, name
+      }
+    }
+  '
+}
+
+cmd_devices() {
+  need_cmd ffmpeg
+  local v a
+  v="$(device_lines video)"
+  a="$(device_lines audio)"
+  [ -n "$v$a" ] || die "could not parse any AVFoundation devices from ffmpeg output"
+
+  printf 'Video devices:\n'
+  if [ -n "$v" ]; then
+    printf '%s\n' "$v" | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
+  else
+    printf '  (none)\n'
+  fi
+  printf '\nAudio devices:\n'
+  if [ -n "$a" ]; then
+    printf '%s\n' "$a" | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
+  else
+    printf '  (none)\n'
+  fi
+}
+
+# Resolve a user selector to an ffmpeg avfoundation input token.
+#   numeric  -> passed through as-is (index)
+#   text     -> case-insensitive substring match against the section's names,
+#               resolved to the FULL device name.
+resolve_device() {
+  local section="$1" sel="$2" lines matches count
+  if [[ "$sel" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$sel"
+    return 0
+  fi
+  lines="$(device_lines "$section")"
+  [ -n "$lines" ] || { log "$PROG: no $section devices found"; return 1; }
+
+  # exact (case-insensitive) match wins over substring
+  matches="$(printf '%s\n' "$lines" | awk -F'\t' -v s="$sel" '
+    BEGIN { s = tolower(s) } tolower($2) == s { print $2 }')"
+  if [ -z "$matches" ]; then
+    matches="$(printf '%s\n' "$lines" | awk -F'\t' -v s="$sel" '
+      BEGIN { s = tolower(s) } index(tolower($2), s) { print $2 }')"
+  fi
+
+  count="$(printf '%s' "$matches" | grep -c . || true)"
+  if [ "$count" -eq 0 ]; then
+    log "$PROG: no $section device matches '$sel'. Available $section devices:"
+    printf '%s\n' "$lines" | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }' >&2
+    return 1
+  fi
+  if [ "$count" -gt 1 ]; then
+    log "$PROG: '$sel' is ambiguous, matches:"
+    printf '%s\n' "$matches" | sed 's/^/  /' >&2
+    return 1
+  fi
+  printf '%s\n' "$matches"
+}
+
+# Probe supported capture modes for a device.
+# Emits "WIDTHxHEIGHT<TAB>FPS" (highest fps per mode), one per line.
+probe_modes() {
+  local dev="$1"
+  ffmpeg -hide_banner -nostdin -f avfoundation -video_size 99999x99999 \
+         -i "$dev" -frames:v 1 -f null - 2>&1 |
+  awk '
+    match($0, /[0-9]+x[0-9]+@\[[0-9.]+ [0-9.]+\]fps/) {
+      s = substr($0, RSTART, RLENGTH)
+      split(s, a, "@")
+      res = a[1]
+      rates = a[2]
+      gsub(/[\[\]]|fps/, "", rates)
+      split(rates, r, " ")
+      fps = (r[2] + 0 > r[1] + 0) ? r[2] : r[1]
+      if (!(res in best) || fps + 0 > best[res] + 0) best[res] = fps
+    }
+    END { for (res in best) printf "%s\t%d\n", res, best[res] + 0.5 }
+  ' | sort -u
+}
+
+# Pick the mode with the largest pixel area. Emits "WxH<TAB>FPS".
+largest_mode() {
+  probe_modes "$1" | awk -F'\t' '
+    { split($1, d, "x"); area = d[1] * d[2]; if (area > best) { best = area; line = $0 } }
+    END { if (line != "") print line }'
+}
+
+# Resolve (device, requested size) -> "WxH<TAB>FPS", degrading gracefully when
+# the probe is unavailable.
+resolve_mode() {
+  local dev="$1" size="$2" modes fps
+  modes="$(probe_modes "$dev" 2>/dev/null || true)"
+  if [ -z "$modes" ]; then
+    printf '%s\t%s\n' "$size" "$DEFAULT_FPS"
+    return 0
+  fi
+  fps="$(printf '%s\n' "$modes" | awk -F'\t' -v s="$size" '$1 == s { print $2; exit }')"
+  if [ -z "$fps" ]; then
+    log "note: $size is not an advertised mode for '$dev'; trying it anyway"
+    printf '%s\t%s\n' "$size" "$DEFAULT_FPS"
+    return 0
+  fi
+  # never exceed the default framerate for ordinary captures
+  [ "$fps" -gt "$DEFAULT_FPS" ] && fps="$DEFAULT_FPS"
+  printf '%s\t%s\n' "$size" "$fps"
+}
+
+# --------------------------------------------------------------------- snap --
+
+cmd_snap() {
+  need_cmd ffmpeg
+  local out="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE"
+  local warmup="$DEFAULT_WARMUP" want_max=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -o|--output)  out="${2:-}";    [ -n "$out" ]  || die "-o requires a file path"; shift 2 ;;
+      -d|--device)  dev="${2:-}";    [ -n "$dev" ]  || die "-d requires a device";    shift 2 ;;
+      -r|--size)    size="${2:-}";   [ -n "$size" ] || die "-r requires WxH";         shift 2 ;;
+      --warmup)     warmup="${2:-}"; shift 2 ;;
+      --max)        want_max=1; shift ;;
+      -h|--help)    usage; return 0 ;;
+      *) die "snap: unknown option '$1' (see: $PROG help)" ;;
+    esac
+  done
+
+  [[ "$warmup" =~ ^[0-9]+$ ]] && [ "$warmup" -ge 1 ] || die "--warmup must be a positive integer"
+  [[ "$size" =~ ^[0-9]+x[0-9]+$ ]] || die "-r must look like 1920x1080"
+
+  local device fps mode
+  device="$(resolve_device video "$dev")" || die "could not resolve video device '$dev'"
+
+  if [ "$want_max" -eq 1 ]; then
+    mode="$(largest_mode "$device" || true)"
+    if [ -n "$mode" ]; then
+      size="${mode%%$'\t'*}"
+      fps="${mode##*$'\t'}"
+      log "--max: using highest advertised mode ${size}@${fps}fps"
+    else
+      fps="$DEFAULT_FPS"
+      log "--max: could not probe device modes; falling back to ${size}@${fps}fps"
+    fi
+  else
+    mode="$(resolve_mode "$device" "$size")"
+    size="${mode%%$'\t'*}"
+    fps="${mode##*$'\t'}"
+  fi
+
+  [ -n "$out" ] || out="$CAPTURE_DIR/snap-$(timestamp).jpg"
+  ensure_parent_dir "$out"
+  out="$(abspath "$out")"
+  EVENT_DEVICE="$device"; EVENT_ARTIFACT="$out"
+
+  # JPEG quality only applies to JPEG output; other muxers would reject -q:v.
+  local qargs=""
+  case "$(printf '%s' "$out" | tr '[:upper:]' '[:lower:]')" in
+    *.jpg|*.jpeg) qargs="-q:v 2" ;;
+  esac
+
+  log "snap: device='$device' ${size}@${fps}fps warmup=${warmup} -> $out"
+  # shellcheck disable=SC2086 # qargs is a deliberate word-split option pair
+  if ! run_ffmpeg "still capture" -- \
+      -f avfoundation -framerate "$fps" -video_size "$size" \
+      -pixel_format "$DEFAULT_PIXFMT" -i "$device" \
+      -frames:v "$warmup" -update 1 $qargs -y "$out"; then
+    tcc_guidance
+    exit 1
+  fi
+  [ -s "$out" ] || { log "$PROG: capture produced an empty file"; exit 1; }
+
+  printf '%s\n' "$out"
+}
+
+# ------------------------------------------------------------------- record --
+
+cmd_record() {
+  need_cmd ffmpeg
+  local out="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE" secs="" with_audio=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -t|--seconds) secs="${2:-}";  [ -n "$secs" ] || die "-t requires seconds"; shift 2 ;;
+      -o|--output)  out="${2:-}";   [ -n "$out" ]  || die "-o requires a file path"; shift 2 ;;
+      -d|--device)  dev="${2:-}";   [ -n "$dev" ]  || die "-d requires a device"; shift 2 ;;
+      -r|--size)    size="${2:-}";  [ -n "$size" ] || die "-r requires WxH"; shift 2 ;;
+      --audio)      with_audio=1; shift ;;
+      -h|--help)    usage; return 0 ;;
+      *) die "record: unknown option '$1' (see: $PROG help)" ;;
+    esac
+  done
+
+  [ -n "$secs" ] || die "record: -t SECONDS is required"
+  [[ "$secs" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "-t must be a number of seconds"
+  [[ "$size" =~ ^[0-9]+x[0-9]+$ ]] || die "-r must look like 1920x1080"
+
+  local device mode fps input
+  device="$(resolve_device video "$dev")" || die "could not resolve video device '$dev'"
+  mode="$(resolve_mode "$device" "$size")"
+  size="${mode%%$'\t'*}"
+  fps="${mode##*$'\t'}"
+
+  input="$device"
+  local aargs="-an"
+  if [ "$with_audio" -eq 1 ]; then
+    local adev=""
+    if [[ "$device" =~ ^[0-9]+$ ]]; then
+      log "note: --audio with a numeric device index uses audio index '$device'"
+      adev="$device"
+    else
+      adev="$(resolve_device audio "$device" 2>/dev/null || true)"
+      if [ -z "$adev" ]; then
+        log "$PROG: no audio device matching '$device'; run '$PROG devices' and pass -d explicitly"
+        exit 1
+      fi
+    fi
+    input="${device}:${adev}"
+    aargs="-c:a aac -b:a 128k"
+  fi
+
+  [ -n "$out" ] || out="$CAPTURE_DIR/rec-$(timestamp).mp4"
+  ensure_parent_dir "$out"
+  out="$(abspath "$out")"
+  EVENT_DEVICE="$input"; EVENT_ARTIFACT="$out"
+
+  log "record: device='$input' ${size}@${fps}fps ${secs}s audio=$with_audio -> $out"
+  # shellcheck disable=SC2086 # aargs is a deliberate word-split option list
+  if ! run_ffmpeg "video capture" -- \
+      -f avfoundation -framerate "$fps" -video_size "$size" \
+      -pixel_format "$DEFAULT_PIXFMT" -i "$input" \
+      -t "$secs" \
+      -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p -r "$fps" \
+      $aargs -movflags +faststart -y "$out"; then
+    tcc_guidance
+    exit 1
+  fi
+  [ -s "$out" ] || { log "$PROG: recording produced an empty file"; exit 1; }
+
+  printf '%s\n' "$out"
+}
+
+# -------------------------------------------------------------------- burst --
+
+cmd_burst() {
+  need_cmd ffmpeg
+  local count="" interval=2 outdir="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n|--count)    count="${2:-}";    [ -n "$count" ] || die "-n requires a count"; shift 2 ;;
+      -i|--interval) interval="${2:-}"; [ -n "$interval" ] || die "-i requires seconds"; shift 2 ;;
+      -o|--output)   outdir="${2:-}";   [ -n "$outdir" ] || die "-o requires a directory"; shift 2 ;;
+      -d|--device)   dev="${2:-}";      [ -n "$dev" ] || die "-d requires a device"; shift 2 ;;
+      -r|--size)     size="${2:-}";     [ -n "$size" ] || die "-r requires WxH"; shift 2 ;;
+      -h|--help)     usage; return 0 ;;
+      *) die "burst: unknown option '$1' (see: $PROG help)" ;;
+    esac
+  done
+
+  [ -n "$count" ] || die "burst: -n COUNT is required"
+  [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -ge 1 ] || die "-n must be a positive integer"
+  [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "-i must be a number of seconds"
+
+  local device
+  device="$(resolve_device video "$dev")" || die "could not resolve video device '$dev'"
+
+  [ -n "$outdir" ] || outdir="$CAPTURE_DIR/burst-$(timestamp)"
+  mkdir -p "$outdir"
+  outdir="$(cd "$outdir" && pwd -P)"
+  EVENT_DEVICE="$device"; EVENT_ARTIFACT="$outdir"
+
+  local i paths=() shot
+  for (( i = 1; i <= count; i++ )); do
+    shot="$(printf '%s/shot-%03d.jpg' "$outdir" "$i")"
+    log "burst: $i/$count -> $shot"
+    if ! "$0" snap -d "$device" -r "$size" -o "$shot" >/dev/null; then
+      log "$PROG: burst aborted at shot $i/$count"
+      exit 1
+    fi
+    paths+=("$shot")
+    if [ "$i" -lt "$count" ]; then
+      sleep "$interval"
+    fi
+  done
+
+  printf '%s\n' "${paths[@]}"
+}
+
+# ------------------------------------------------------------------- frames --
+
+# ceil(sqrt(n))
+grid_cols() { awk -v n="$1" 'BEGIN { c = int(sqrt(n)); while (c * c < n) c++; print (c < 1 ? 1 : c) }'; }
+
+cmd_frames() {
+  need_cmd ffmpeg
+  need_cmd ffprobe
+  local video="" n=12 outdir="" want_sheet=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n|--count)  n="${2:-}";      [ -n "$n" ] || die "-n requires a count"; shift 2 ;;
+      -o|--output) outdir="${2:-}"; [ -n "$outdir" ] || die "-o requires a directory"; shift 2 ;;
+      --sheet)     want_sheet=1; shift ;;
+      -h|--help)   usage; return 0 ;;
+      -*)          die "frames: unknown option '$1' (see: $PROG help)" ;;
+      *)           [ -n "$video" ] && die "frames: unexpected extra argument '$1'"
+                   video="$1"; shift ;;
+    esac
+  done
+
+  [ -n "$video" ] || die "frames: a VIDEO path is required"
+  [ -f "$video" ] || die "frames: no such file: $video"
+  [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] || die "-n must be a positive integer"
+  video="$(abspath "$video")"
+
+  local duration
+  duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$video" 2>/dev/null || true)"
+  [[ "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "frames: could not read duration of $video"
+  awk -v d="$duration" 'BEGIN { exit !(d > 0) }' || die "frames: video has zero duration: $video"
+
+  [ -n "$outdir" ] || outdir="$CAPTURE_DIR/frames-$(timestamp)"
+  mkdir -p "$outdir"
+  outdir="$(cd "$outdir" && pwd -P)"
+  EVENT_ARTIFACT="$outdir"
+
+  # Evenly spaced sample points at the centre of each of n equal slices.
+  local -a stamps=() produced=()
+  while IFS= read -r ts; do stamps+=("$ts"); done < <(
+    awk -v d="$duration" -v n="$n" 'BEGIN { for (i = 0; i < n; i++) printf "%.3f\n", d * (i + 0.5) / n }'
+  )
+
+  local i frame
+  for (( i = 0; i < ${#stamps[@]}; i++ )); do
+    frame="$(printf '%s/frame-%03d.jpg' "$outdir" "$((i + 1))")"
+    if ! run_ffmpeg "frame extraction at ${stamps[i]}s" -- \
+        -ss "${stamps[i]}" -i "$video" -frames:v 1 -q:v 2 -y "$frame"; then
+      die "frames: failed to extract frame at ${stamps[i]}s"
+    fi
+    [ -s "$frame" ] || die "frames: empty frame written at ${stamps[i]}s"
+    produced+=("$frame")
+  done
+  log "frames: extracted ${#produced[@]} frame(s) from $video into $outdir"
+
+  local -a sheets=()
+  if [ "$want_sheet" -eq 1 ]; then
+    local total=${#produced[@]} chunk=0 start=0
+    while [ "$start" -lt "$total" ]; do
+      chunk=$((chunk + 1))
+      local take=$SHEET_MAX_TILES
+      [ $((start + take)) -gt "$total" ] && take=$((total - start))
+
+      local cols rows cell tmpdir sheet j src
+      cols="$(grid_cols "$take")"
+      rows=$(( (take + cols - 1) / cols ))
+      cell=$(( SHEET_MAX_WIDTH / cols ))
+      cell=$(( cell - (cell % 2) ))
+      [ "$cell" -lt 2 ] && cell=2
+
+      tmpdir="$(mktemp -d -t cameraboi-sheet)"
+      for (( j = 0; j < take; j++ )); do
+        src="${produced[$((start + j))]}"
+        cp "$src" "$(printf '%s/t-%04d.jpg' "$tmpdir" "$((j + 1))")"
+      done
+
+      if [ "$total" -le "$SHEET_MAX_TILES" ]; then
+        sheet="$outdir/contact-sheet.jpg"
+      else
+        sheet="$(printf '%s/contact-sheet-%02d.jpg' "$outdir" "$chunk")"
+      fi
+
+      if ! run_ffmpeg "contact sheet ${cols}x${rows}" -- \
+          -framerate 1 -i "$tmpdir/t-%04d.jpg" \
+          -frames:v 1 -vf "scale=${cell}:-2,tile=${cols}x${rows}" -q:v 3 -y "$sheet"; then
+        rm -rf "$tmpdir"
+        die "frames: contact sheet generation failed"
+      fi
+      rm -rf "$tmpdir"
+      [ -s "$sheet" ] || die "frames: contact sheet is empty: $sheet"
+      log "frames: contact sheet ${cols}x${rows} -> $sheet"
+      sheets+=("$sheet")
+      start=$((start + take))
+    done
+  fi
+
+  printf '%s\n' "${produced[@]}"
+  [ "${#sheets[@]}" -gt 0 ] && printf '%s\n' "${sheets[@]}"
+  return 0
+}
+
+# --------------------------------------------------------------------- logs --
+
+cmd_logs() {
+  local tailn="$LOGS_DEFAULT_TAIL" failures=0 raw=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --tail)     tailn="${2:-}"; [ -n "$tailn" ] || die "--tail requires a count"; shift 2 ;;
+      --failures) failures=1; shift ;;
+      --json)     raw=1; shift ;;
+      -h|--help)  usage; return 0 ;;
+      *) die "logs: unknown option '$1' (see: $PROG help)" ;;
+    esac
+  done
+  [[ "$tailn" =~ ^[0-9]+$ ]] && [ "$tailn" -ge 1 ] || die "--tail must be a positive integer"
+  [ "$tailn" -gt "$LOGS_MAX_TAIL" ] && tailn="$LOGS_MAX_TAIL"
+  [ -f "$EVENTS_FILE" ] || { log "no capture events recorded yet ($EVENTS_FILE)"; return 0; }
+
+  local lines
+  if [ "$failures" -eq 1 ]; then
+    lines="$(grep -v '"exit_code":0,' "$EVENTS_FILE" | tail -n "$tailn" || true)"
+  else
+    lines="$(tail -n "$tailn" "$EVENTS_FILE")"
+  fi
+  [ -n "$lines" ] || { log "no matching events"; return 0; }
+
+  if [ "$raw" -eq 1 ] || ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$lines"
+    return 0
+  fi
+  printf '%s\n' "$lines" | python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except ValueError:
+        print(line)
+        continue
+    ok = e.get("exit_code") == 0
+    tail = e.get("artifact") or ""
+    if not ok:
+        err = (e.get("ffmpeg_stderr") or "").strip().splitlines()
+        tail = err[-1] if err else "(no ffmpeg stderr)"
+    print("%s %-4s %-7s exit=%-3s %6sms  %s" % (
+        e.get("ts", "?"), "ok" if ok else "FAIL", e.get("cmd", "?"),
+        e.get("exit_code"), e.get("duration_ms", "?"), tail))
+'
+}
+
+# ------------------------------------------------------------------- doctor --
+
+cmd_doctor() {
+  local failures=0 dev="$DEFAULT_DEVICE"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -d|--device) dev="${2:-}"; [ -n "$dev" ] || die "-d requires a device"; shift 2 ;;
+      -h|--help)   usage; return 0 ;;
+      *) die "doctor: unknown option '$1' (see: $PROG help)" ;;
+    esac
+  done
+
+  log "cameraboi doctor"
+  log "----------------"
+
+  # 1. ffmpeg / ffprobe
+  if command -v ffmpeg >/dev/null 2>&1; then
+    log "[ok]   ffmpeg: $(command -v ffmpeg) ($(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f1-3))"
+  else
+    log "[FAIL] ffmpeg not found - install with: brew install ffmpeg"
+    failures=$((failures + 1))
+  fi
+  if command -v ffprobe >/dev/null 2>&1; then
+    log "[ok]   ffprobe: $(command -v ffprobe)"
+  else
+    log "[FAIL] ffprobe not found (ships with ffmpeg) - 'frames' will not work"
+    failures=$((failures + 1))
+  fi
+  if [ "$failures" -gt 0 ]; then
+    log "----------------"
+    log "doctor: $failures check(s) failed"
+    return 1
+  fi
+
+  # 2. device enumeration
+  local vlines alines
+  vlines="$(device_lines video)"
+  alines="$(device_lines audio)"
+  if [ -n "$vlines" ]; then
+    log "[ok]   video devices:"
+    printf '%s\n' "$vlines" | awk -F'\t' '{ printf "         [%s] %s\n", $1, $2 }' >&2
+  else
+    log "[FAIL] no AVFoundation video devices found"
+    failures=$((failures + 1))
+  fi
+  if [ -n "$alines" ]; then
+    log "[ok]   audio devices:"
+    printf '%s\n' "$alines" | awk -F'\t' '{ printf "         [%s] %s\n", $1, $2 }' >&2
+  else
+    log "[warn] no AVFoundation audio devices found (--audio recording unavailable)"
+  fi
+
+  # 3. default device present
+  local device=""
+  if device="$(resolve_device video "$dev" 2>/dev/null)"; then
+    log "[ok]   default device resolves: '$dev' -> '$device'"
+  else
+    log "[FAIL] default device '$dev' not present - pass -d with one of the devices above"
+    failures=$((failures + 1))
+  fi
+
+  # 4. live test capture
+  if [ -n "$device" ]; then
+    local tmpdir tmp
+    tmpdir="$(mktemp -d -t cameraboi-doctor)"
+    tmp="$tmpdir/test.jpg"
+    if run_ffmpeg "doctor test capture" -- \
+        -f avfoundation -framerate 30 -video_size 640x480 \
+        -pixel_format "$DEFAULT_PIXFMT" -i "$device" \
+        -frames:v 1 -update 1 -q:v 5 -y "$tmp" && [ -s "$tmp" ]; then
+      log "[ok]   live 640x480 test capture succeeded ($(wc -c <"$tmp" | tr -d ' ') bytes)"
+    else
+      log "[FAIL] live test capture from '$device' failed"
+      tcc_guidance
+      failures=$((failures + 1))
+    fi
+    rm -rf "$tmpdir"
+  else
+    log "[skip] live test capture (no usable device)"
+  fi
+
+  # 5. recent capture failures from the event log
+  if [ -f "$EVENTS_FILE" ]; then
+    local lastfail
+    lastfail="$(grep -v '"exit_code":0,' "$EVENTS_FILE" | tail -n 1 || true)"
+    if [ -n "$lastfail" ]; then
+      log "[info] last recorded capture failure (see: $PROG logs --failures):"
+      printf '%s\n' "$lastfail" | cut -c1-300 | sed 's/^/         /' >&2
+    else
+      log "[ok]   event log: no recorded capture failures"
+    fi
+  else
+    log "[ok]   event log: empty (no captures recorded yet)"
+  fi
+
+  log "----------------"
+  if [ "$failures" -eq 0 ]; then
+    log "doctor: all checks passed"
+    return 0
+  fi
+  log "doctor: $failures check(s) failed"
+  return 1
+}
+
+# --------------------------------------------------------------------- help --
+
+usage() {
+  cat >&2 <<EOS
+$PROG - camera capture for macOS (AVFoundation via ffmpeg)
+
+USAGE
+  $PROG <command> [options]
+
+COMMANDS
+  devices
+      List AVFoundation video and audio devices with their indices.
+
+  snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--max]
+      Capture a still image.
+      -o FILE     output path (default: $CAPTURE_DIR/snap-<ts>.jpg)
+      -d DEVICE   device index or case-insensitive substring (default: "$DEFAULT_DEVICE")
+      -r WxH      capture size (default: $DEFAULT_SIZE)
+      --warmup N  frames to burn before keeping the last one (default: $DEFAULT_WARMUP)
+                  lets auto-exposure / auto-white-balance settle
+      --max       use the highest resolution the device advertises
+                  (falls back to -r / the default if probing fails)
+
+  record -t SECONDS [-o FILE] [-d DEVICE] [-r WxH] [--audio]
+      Record H.264 mp4 (+faststart), default ${DEFAULT_SIZE}@${DEFAULT_FPS}.
+      -t SECONDS  duration (required)
+      --audio     also record the device's microphone (AAC)
+
+  burst -n COUNT [-i SECONDS] [-o DIR] [-d DEVICE] [-r WxH]
+      COUNT stills at SECONDS interval (default 2s) into a directory
+      (default: $CAPTURE_DIR/burst-<ts>/).
+
+  frames VIDEO [-n N] [-o DIR] [--sheet]
+      Extract N evenly-spaced frames (default 12) from VIDEO.
+      --sheet     also build tiled contact sheet(s) (<= ${SHEET_MAX_WIDTH}px wide)
+
+  logs [--tail N] [--failures] [--json]
+      Query the capture event log (default last ${LOGS_DEFAULT_TAIL}, cap ${LOGS_MAX_TAIL}).
+      Every capture command appends one JSONL event (ts, cmd, device, args,
+      exit code, duration, artifact, ffmpeg stderr) to
+      $CAPTURE_DIR/.sessions/events.jsonl
+      --failures  only events with a non-zero exit code
+      --json      raw JSONL instead of the human-readable rendering
+
+  doctor [-d DEVICE]
+      Verify ffmpeg, enumerate devices, confirm the default device is present
+      and run a live 640x480 test capture. Exits 0 only if everything passes.
+      Also surfaces the most recent recorded capture failure.
+
+  help
+      This message.
+
+OUTPUT CONTRACT
+  The LAST stdout line(s) of snap/record/burst/frames are the absolute path(s)
+  of the artifacts produced. Progress and diagnostics go to stderr, so
+  \`FILE=\$($PROG snap)\` is safe.
+
+ENVIRONMENT
+  CAMERABOI_DIR   default capture directory (currently: $CAPTURE_DIR)
+
+EXAMPLES
+  $PROG doctor
+  $PROG snap -d ipevo --max -o /tmp/desk.jpg
+  $PROG record -t 10 --audio -o /tmp/clip.mp4
+  $PROG frames /tmp/clip.mp4 -n 12 --sheet -o /tmp/clip-frames
+EOS
+}
+
+# --------------------------------------------------------------------- main --
+
+main() {
+  [ $# -eq 0 ] && { usage; exit 1; }
+  local cmd="$1"; shift
+
+  # Capture commands log one JSONL event on exit (success or failure).
+  case "$cmd" in
+    snap|photo|record|video|burst|frames|doctor)
+      EVENT_CMD="$cmd"
+      EVENT_ARGS="$*"
+      EVENT_START="$(date +%s)"
+      trap 'log_event "$?"' EXIT
+      ;;
+  esac
+
+  case "$cmd" in
+    devices)          cmd_devices "$@" ;;
+    snap|photo)       cmd_snap "$@" ;;
+    record|video)     cmd_record "$@" ;;
+    burst)            cmd_burst "$@" ;;
+    frames)           cmd_frames "$@" ;;
+    logs)             cmd_logs "$@" ;;
+    doctor)           cmd_doctor "$@" ;;
+    help|-h|--help)   usage; exit 0 ;;
+    *) die "unknown command '$cmd' (see: $PROG help)" ;;
+  esac
+}
+
+main "$@"
