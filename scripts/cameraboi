@@ -10,6 +10,14 @@
 set -euo pipefail
 
 readonly PROG="${0##*/}"
+# Resolve the directory holding this script (following a symlink one level)
+# so the autofocus helper is found next to it.
+_self="$0"
+[ -L "$_self" ] && _self="$(readlink "$_self")"
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd -P)"
+readonly SCRIPT_DIR
+readonly AF_SRC="$SCRIPT_DIR/cameraboi-af.swift"
+readonly AF_BIN="$SCRIPT_DIR/cameraboi-af"
 readonly DEFAULT_DEVICE="IPEVO V4K"
 readonly DEFAULT_SIZE="1920x1080"
 readonly DEFAULT_FPS="30"
@@ -82,6 +90,23 @@ make_model_copy() {
       && [ -s "$model" ]; then
     printf '%s\n' "$model"
   fi
+}
+
+# Best-effort continuous autofocus (UVC cameras keep the mode after we exit).
+# Lazily compiles scripts/cameraboi-af.swift with swiftc on first use (or when
+# the source is newer than the binary). Never fails the capture: no swiftc, a
+# failed build, or a failed run all degrade to capturing without AF.
+# Suppressed by --no-af / CAMERABOI_NO_AF=1.
+autofocus_enable() {
+  [ "${CAMERABOI_NO_AF:-0}" = "1" ] && return 0
+  [ -f "$AF_SRC" ] || return 0
+  if [ ! -x "$AF_BIN" ] || [ "$AF_SRC" -nt "$AF_BIN" ]; then
+    command -v swiftc >/dev/null 2>&1 || { log "note: swiftc not found; skipping autofocus"; return 0; }
+    log "af: compiling autofocus helper (one-time)"
+    swiftc -O -o "$AF_BIN" "$AF_SRC" 2>/dev/null || { log "note: autofocus helper build failed; skipping"; return 0; }
+  fi
+  "$AF_BIN" || log "note: autofocus helper failed; capturing anyway"
+  return 0
 }
 
 tcc_guidance() {
@@ -313,6 +338,7 @@ cmd_snap() {
       --warmup)     warmup="${2:-}"; shift 2 ;;
       --max)        want_max=1; shift ;;
       --no-open)    no_open=1; shift ;;
+      --no-af)      CAMERABOI_NO_AF=1; shift ;;
       --full|--no-model) no_model=1; shift ;;
       -h|--help)    usage; return 0 ;;
       *) die "snap: unknown option '$1' (see: $PROG help)" ;;
@@ -353,6 +379,7 @@ cmd_snap() {
     *.jpg|*.jpeg) qargs="-q:v 2" ;;
   esac
 
+  autofocus_enable
   log "snap: device='$device' ${size}@${fps}fps warmup=${warmup} -> $out"
   # shellcheck disable=SC2086 # qargs is a deliberate word-split option pair
   if ! run_ffmpeg "still capture" -- \
@@ -388,6 +415,7 @@ cmd_record() {
       -d|--device)  dev="${2:-}";   [ -n "$dev" ]  || die "-d requires a device"; shift 2 ;;
       -r|--size)    size="${2:-}";  [ -n "$size" ] || die "-r requires WxH"; shift 2 ;;
       --audio)      with_audio=1; shift ;;
+      --no-af)      CAMERABOI_NO_AF=1; shift ;;
       -h|--help)    usage; return 0 ;;
       *) die "record: unknown option '$1' (see: $PROG help)" ;;
     esac
@@ -426,6 +454,7 @@ cmd_record() {
   out="$(abspath "$out")"
   EVENT_DEVICE="$input"; EVENT_ARTIFACT="$out"
 
+  autofocus_enable
   log "record: device='$input' ${size}@${fps}fps ${secs}s audio=$with_audio -> $out"
   # shellcheck disable=SC2086 # aargs is a deliberate word-split option list
   if ! run_ffmpeg "video capture" -- \
@@ -472,11 +501,15 @@ cmd_burst() {
   outdir="$(cd "$outdir" && pwd -P)"
   EVENT_DEVICE="$device"; EVENT_ARTIFACT="$outdir"
 
+  # Enable AF once up front; the mode persists on the device, so per-shot
+  # snaps skip the helper (and its settle delay) via --no-af.
+  autofocus_enable
+
   local i paths=() shot
   for (( i = 1; i <= count; i++ )); do
     shot="$(printf '%s/shot-%03d.jpg' "$outdir" "$i")"
     log "burst: $i/$count -> $shot"
-    if ! bash "$0" snap -d "$device" -r "$size" -o "$shot" --no-open --no-model >/dev/null; then
+    if ! bash "$0" snap -d "$device" -r "$size" -o "$shot" --no-open --no-model --no-af >/dev/null; then
       log "$PROG: burst aborted at shot $i/$count"
       exit 1
     fi
@@ -775,6 +808,10 @@ COMMANDS
                   ${MODEL_TRIGGER_WIDTH}px get a ${MODEL_MAX_WIDTH}px-wide "<name>-model.jpg" copy,
                   printed as the LAST stdout line - vision consumers Read that
                   one; the full-res original stays on disk (line above).
+      --no-af     skip the automatic continuous-autofocus pass (also
+                  suppressed by CAMERABOI_NO_AF=1). By default snap/record/
+                  burst enable continuous AF on cameras that support it
+                  (e.g. the IPEVO V4K) before capturing.
 
   record -t SECONDS [-o FILE] [-d DEVICE] [-r WxH] [--audio]
       Record H.264 mp4 (+faststart), default ${DEFAULT_SIZE}@${DEFAULT_FPS}.
@@ -811,7 +848,10 @@ OUTPUT CONTRACT
   \`FILE=\$($PROG snap)\` is safe.
 
 ENVIRONMENT
-  CAMERABOI_DIR   default capture directory (currently: $CAPTURE_DIR)
+  CAMERABOI_DIR        default capture directory (currently: $CAPTURE_DIR)
+  CAMERABOI_NO_AF      1 = never run the autofocus helper
+  CAMERABOI_AF_SETTLE  seconds the AF helper holds the device so the lens can
+                       settle (default 1.0)
 
 EXAMPLES
   $PROG doctor

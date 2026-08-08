@@ -99,9 +99,16 @@ and a hand-rolled `ffmpeg` command frequently does not. Add that flag to your ow
 
 ## Dark, washed out, or blurry stills
 
-Auto-exposure and auto-white-balance need frames to converge on. `snap` captures a warm-up
-run of 15 frames by default and keeps the last one, precisely to avoid this. In difficult
-light, give it longer:
+Focus first: `snap`, `record`, and `burst` automatically enable **continuous autofocus** on
+cameras that support it (the IPEVO V4K does) via a small AVFoundation helper
+(`scripts/cameraboi-af.swift`, compiled on first use with `swiftc`). If a capture is soft,
+check stderr for the `af:` lines — a missing `swiftc` or an unsupported camera means the
+pass was skipped. Disable it deliberately with `--no-af` or `CAMERABOI_NO_AF=1`; give the
+lens longer to settle with `CAMERABOI_AF_SETTLE=2` (seconds).
+
+Exposure second: auto-exposure and auto-white-balance need frames to converge on. `snap`
+captures a warm-up run of 15 frames by default and keeps the last one, precisely to avoid
+this. In difficult light, give it longer:
 
 ```bash
 scripts/cameraboi snap --warmup 30

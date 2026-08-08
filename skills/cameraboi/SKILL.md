@@ -106,8 +106,14 @@ exit code, ffmpeg stderr, timing — so debug from the log, not from blind rerun
   user which camera was actually used when it is not the V4K.
 - **Frame is black or badly exposed** — the sensor needed longer to settle. Retry with a
   larger warmup: `snap --warmup 40`.
-- **Frame is blurry or cropped wrong** — this is physical. Ask the user to adjust the
-  V4K arm, focus, or lighting, then snap again. Do not try to fix optics in software.
+- **Frame is blurry** — snap/record/burst auto-enable continuous autofocus on cameras
+  that support it (the V4K does); check stderr for the `af:` lines. If AF ran and the
+  frame is still soft, the subject may be too close for the lens — ask the user to
+  raise the V4K arm or improve lighting, then snap again. `--no-af` /
+  `CAMERABOI_NO_AF=1` disables the AF pass; `CAMERABOI_AF_SETTLE=2` gives the lens
+  longer to settle.
+- **Frame is cropped wrong** — this is physical. Ask the user to adjust the V4K arm,
+  then snap again. Do not try to fix framing in software.
 
 ## Conventions
 
