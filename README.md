@@ -57,7 +57,7 @@ scripts/cameraboi <command> [options]
 | Command | Options | What it does |
 |---|---|---|
 | `devices` | — | List AVFoundation video and audio devices |
-| `snap` | `[-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--max] [--full] [--no-open] [--no-af]` | Still capture. Defaults: `IPEVO V4K`, 1920x1080@30, 15-frame warm-up, output `~/Pictures/cameraboi/snap-YYYYmmdd-HHMMSS.jpg`. `--max` tries the camera's high-res photo mode. Continuous autofocus is enabled automatically on cameras that support it (`--no-af` / `CAMERABOI_NO_AF=1` to skip). Opens in Preview on success (`--no-open` to skip); captures wider than 2000px also emit a 1568px `-model.jpg` copy for vision models, skipped by `--full` |
+| `snap` | `[-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--full] [--no-open] [--no-af]` | Still capture. Defaults: `IPEVO V4K`, **native (highest advertised) resolution** — 3264x2448 on the V4K, 1920x1080 fallback if probing fails — 15-frame warm-up, output `~/Pictures/cameraboi/snap-YYYYmmdd-HHMMSS.jpg`. `-r WxH` forces a specific mode; `--max` is a legacy no-op. Continuous autofocus is enabled automatically on cameras that support it (`--no-af` / `CAMERABOI_NO_AF=1` to skip). Opens in Preview on success (`--no-open` to skip); captures wider than 2000px also emit a 1568px `-model.jpg` copy for vision models, skipped by `--full` |
 | `record` | `-t SECONDS [-o FILE] [-d DEVICE] [--audio] [-r WxH]` | H.264 MP4 with `+faststart`, 1920x1080@30. `--audio` adds the device's own microphone |
 | `burst` | `-n COUNT [-i SECONDS] [-o DIR]` | N stills at a fixed interval — timelapse or monitoring |
 | `frames` | `VIDEO [-n N] [-o DIR] [--sheet]` | Extract evenly spaced frames (default 12); `--sheet` tiles them into contact sheets |

@@ -14,7 +14,7 @@ face. Scanning multiple pages is a loop of snap → Read → confirm → ask for
 ```bash
 CB=~/Documents/work/cameraBoi/scripts/cameraboi
 
-$CB snap --max -o ~/Pictures/cameraboi/scan/page-01.jpg
+$CB snap -o ~/Pictures/cameraboi/scan/page-01.jpg
 # → /Users/you/Pictures/cameraboi/scan/page-01.jpg
 ```
 
@@ -23,16 +23,19 @@ page and repeat with `page-02.jpg`. Keep the numbering zero-padded so the files 
 
 Guidelines that matter in practice:
 
-- **Use `--max` for text.** Higher resolution is the difference between readable and
-  unreadable small print. If `--max` is unsupported by the attached firmware the CLI
-  falls back to the standard mode — no error, just a lower-resolution file.
+- **Native resolution is the default.** Stills capture at the camera's highest
+  advertised mode automatically (3264x2448 on the V4K) — small print stays readable
+  with no extra flags. If mode probing fails the CLI falls back to 1080p — no error,
+  just a lower-resolution file.
+- **For fine text, Read the full-res original,** not the model-sized copy (see
+  Resolution flags below).
 - **Read every page before asking for the next one.** If page 3 came out blurry, you want
   to know at page 3, not after page 12.
 - **Report unreadable regions honestly.** If a column is cut off or glare washes out a
   paragraph, say so and ask for a re-snap with the page moved — do not infer the missing
   words.
 - **Whiteboards** are the same flow with the built-in or a repositioned camera: `-d`
-  whichever device actually faces the board, `--max`, and one snap per board region if it
+  whichever device actually faces the board, and one snap per board region if it
   does not fit in a single frame.
 
 ## 2. Before / after comparison
@@ -94,13 +97,12 @@ $CB frames /tmp/clip.mp4 -n 16 --sheet -o /tmp/clip-frames
 
 | Flag | Effect |
 |---|---|
-| `-r WxH` | Requests an explicit capture mode, e.g. `-r 1280x720`. Must be a mode the device actually supports — run `devices` if unsure |
-| `--max` | Asks for the V4K's highest available photo mode. Probes supported modes and degrades gracefully to the default if the mode is unavailable |
-| *(neither)* | 1920x1080 @ 30fps — the right default for a scene, a face, or a person holding something up |
+| *(none)* | **Native mode** — probes the device and captures at its highest advertised resolution (3264x2448 on the V4K). Falls back to 1920x1080 if probing fails |
+| `-r WxH` | Forces an explicit capture mode, e.g. `-r 1280x720`. Must be a mode the device actually supports — run `devices` if unsure |
+| `--max` | Legacy no-op alias — native is already the default |
 
-Rules of thumb: `--max` for anything with text on it (documents, whiteboards, screens,
-labels, serial numbers). Default 1080p for scenes and objects. Lower `-r` only when the
-file size actually matters, such as a long burst.
+Rules of thumb: the default is right for nearly everything, including text. Lower `-r`
+only when file size or capture speed actually matters, such as a long burst.
 
 Captures wider than 2000px automatically get a 1568px-wide `<name>-model.jpg` companion,
 printed as the **last** stdout line — Read that one for scenes (a fraction of the tokens).
@@ -134,7 +136,7 @@ $ ~/Documents/work/cameraBoi/scripts/cameraboi snap
 ### "Scan this page for me"
 
 ```
-$ ~/Documents/work/cameraBoi/scripts/cameraboi snap --max -o ~/Pictures/cameraboi/scan/page-01.jpg
+$ ~/Documents/work/cameraBoi/scripts/cameraboi snap -o ~/Pictures/cameraboi/scan/page-01.jpg
 /Users/you/Pictures/cameraboi/scan/page-01.jpg
 /Users/you/Pictures/cameraboi/scan/page-01-model.jpg
 ```

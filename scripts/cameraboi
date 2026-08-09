@@ -19,6 +19,9 @@ readonly SCRIPT_DIR
 readonly AF_SRC="$SCRIPT_DIR/cameraboi-af.swift"
 readonly AF_BIN="$SCRIPT_DIR/cameraboi-af"
 readonly DEFAULT_DEVICE="IPEVO V4K"
+# Stills (snap/burst) default to the device's native (highest advertised) mode,
+# probed at runtime; DEFAULT_SIZE is the fallback when probing fails and the
+# default for video recording, where encode cost and fps caps make 1080p right.
 readonly DEFAULT_SIZE="1920x1080"
 readonly DEFAULT_FPS="30"
 readonly DEFAULT_WARMUP="15"
@@ -327,14 +330,14 @@ resolve_mode() {
 
 cmd_snap() {
   need_cmd ffmpeg
-  local out="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE"
+  local out="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE" size_explicit=0
   local warmup="$DEFAULT_WARMUP" want_max=0 no_open=0 no_model=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
       -o|--output)  out="${2:-}";    [ -n "$out" ]  || die "-o requires a file path"; shift 2 ;;
       -d|--device)  dev="${2:-}";    [ -n "$dev" ]  || die "-d requires a device";    shift 2 ;;
-      -r|--size)    size="${2:-}";   [ -n "$size" ] || die "-r requires WxH";         shift 2 ;;
+      -r|--size)    size="${2:-}";   [ -n "$size" ] || die "-r requires WxH"; size_explicit=1; shift 2 ;;
       --warmup)     warmup="${2:-}"; shift 2 ;;
       --max)        want_max=1; shift ;;
       --no-open)    no_open=1; shift ;;
@@ -352,15 +355,17 @@ cmd_snap() {
   local device fps mode
   device="$(resolve_device video "$dev")" || die "could not resolve video device '$dev'"
 
-  if [ "$want_max" -eq 1 ]; then
+  # Native (highest advertised) mode is the default for stills; an explicit
+  # -r opts out. --max is kept as a no-op alias from when 1080p was default.
+  if [ "$want_max" -eq 1 ] || [ "$size_explicit" -eq 0 ]; then
     mode="$(largest_mode "$device" || true)"
     if [ -n "$mode" ]; then
       size="${mode%%$'\t'*}"
       fps="${mode##*$'\t'}"
-      log "--max: using highest advertised mode ${size}@${fps}fps"
+      log "snap: native mode ${size}@${fps}fps (pass -r WxH to override)"
     else
       fps="$DEFAULT_FPS"
-      log "--max: could not probe device modes; falling back to ${size}@${fps}fps"
+      log "note: could not probe device modes; falling back to ${size}@${fps}fps"
     fi
   else
     mode="$(resolve_mode "$device" "$size")"
@@ -475,7 +480,7 @@ cmd_record() {
 
 cmd_burst() {
   need_cmd ffmpeg
-  local count="" interval=2 outdir="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE"
+  local count="" interval=2 outdir="" dev="$DEFAULT_DEVICE" size="$DEFAULT_SIZE" size_explicit=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -483,7 +488,7 @@ cmd_burst() {
       -i|--interval) interval="${2:-}"; [ -n "$interval" ] || die "-i requires seconds"; shift 2 ;;
       -o|--output)   outdir="${2:-}";   [ -n "$outdir" ] || die "-o requires a directory"; shift 2 ;;
       -d|--device)   dev="${2:-}";      [ -n "$dev" ] || die "-d requires a device"; shift 2 ;;
-      -r|--size)     size="${2:-}";     [ -n "$size" ] || die "-r requires WxH"; shift 2 ;;
+      -r|--size)     size="${2:-}";     [ -n "$size" ] || die "-r requires WxH"; size_explicit=1; shift 2 ;;
       -h|--help)     usage; return 0 ;;
       *) die "burst: unknown option '$1' (see: $PROG help)" ;;
     esac
@@ -495,6 +500,19 @@ cmd_burst() {
 
   local device
   device="$(resolve_device video "$dev")" || die "could not resolve video device '$dev'"
+
+  # Stills default to the native mode; probe once here so the per-shot snaps
+  # (which get an explicit -r) don't each pay the probe.
+  if [ "$size_explicit" -eq 0 ]; then
+    local nmode
+    nmode="$(largest_mode "$device" || true)"
+    if [ -n "$nmode" ]; then
+      size="${nmode%%$'\t'*}"
+      log "burst: native mode ${size} (pass -r WxH to override)"
+    else
+      log "note: could not probe device modes; using ${size}"
+    fi
+  fi
 
   [ -n "$outdir" ] || outdir="$CAPTURE_DIR/burst-$(timestamp)"
   mkdir -p "$outdir"
@@ -792,15 +810,17 @@ COMMANDS
   devices
       List AVFoundation video and audio devices with their indices.
 
-  snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--max]
-      Capture a still image.
+  snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N]
+      Capture a still image at the device's NATIVE (highest advertised)
+      resolution by default.
       -o FILE     output path (default: $CAPTURE_DIR/snap-<ts>.jpg)
       -d DEVICE   device index or case-insensitive substring (default: "$DEFAULT_DEVICE")
-      -r WxH      capture size (default: $DEFAULT_SIZE)
+      -r WxH      capture at a specific size instead of the native mode
+                  (falls back to $DEFAULT_SIZE when native probing fails)
       --warmup N  frames to burn before keeping the last one (default: $DEFAULT_WARMUP)
                   lets auto-exposure / auto-white-balance settle
-      --max       use the highest resolution the device advertises
-                  (falls back to -r / the default if probing fails)
+      --max       no-op alias (native is already the default; kept for
+                  backwards compatibility)
       --no-open   do not open the capture in Preview (default: opens on success;
                   also suppressed by CAMERABOI_NO_OPEN=1)
       --full      full resolution only - skip the model-sized copy entirely
@@ -820,7 +840,8 @@ COMMANDS
 
   burst -n COUNT [-i SECONDS] [-o DIR] [-d DEVICE] [-r WxH]
       COUNT stills at SECONDS interval (default 2s) into a directory
-      (default: $CAPTURE_DIR/burst-<ts>/).
+      (default: $CAPTURE_DIR/burst-<ts>/). Native resolution by default,
+      like snap; pass -r WxH to capture smaller/faster.
 
   frames VIDEO [-n N] [-o DIR] [--sheet]
       Extract N evenly-spaced frames (default 12) from VIDEO.

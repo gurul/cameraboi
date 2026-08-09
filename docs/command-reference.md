@@ -94,22 +94,22 @@ Run this whenever a capture reports a missing device, or before scripting an ind
 Captures a single still image.
 
 ```bash
-scripts/cameraboi snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--max] [--full] [--no-open] [--no-af]
+scripts/cameraboi snap [-o FILE] [-d DEVICE] [-r WxH] [--warmup N] [--full] [--no-open] [--no-af]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `-o FILE` | `~/Pictures/cameraboi/snap-YYYYmmdd-HHMMSS.jpg` | Output file path |
 | `-d DEVICE` | `IPEVO V4K` | Device name substring or index |
-| `-r WxH` | `1920x1080` (at 30 fps) | Capture resolution |
+| `-r WxH` | **native** — the highest mode the device advertises (3264x2448 on the V4K; falls back to `1920x1080` if probing fails) | Force a specific capture resolution |
 | `--warmup N` | `15` frames | Frames to pull before keeping one |
-| `--max` | off | Try the V4K's high-resolution photo mode |
+| `--max` | — | Legacy no-op alias (native resolution is already the default) |
 | `--full` | off | Full resolution only — skip the model-sized copy (alias: `--no-model`) |
 | `--no-open` | off | Do not open the capture in Preview (also `CAMERABOI_NO_OPEN=1`) |
 | `--no-af` | off | Skip the automatic autofocus pass (also `CAMERABOI_NO_AF=1`) |
 
 On success the capture **opens in Preview** so the human sees the shot immediately. If the
-capture is wider than 2000px (typically `--max`), snap also writes a **model-sized copy** —
+capture is wider than 2000px (typical at native resolution), snap also writes a **model-sized copy** —
 a 1568px-wide `<name>-model.jpg` (override the width with `CAMERABOI_MODEL_MAX`) — and
 prints it as the **last** stdout line. Vision consumers should Read the model copy for
 scenes and the full-res original (the line above) for fine text; `--full` skips the copy
@@ -130,19 +130,20 @@ dark or colour-cast. `snap` requests `--warmup` frames with `-frames:v N -update
 overwrites the output file on each frame — the last frame wins, and by then the sensor has
 settled. Raise it in difficult light; lower it if you need the shutter to fire faster.
 
-`--max` probes the camera's supported modes and captures at the highest still resolution it
-advertises. V4K photo modes vary by firmware, so this degrades gracefully: if the probe
-finds nothing better, the capture proceeds at the standard resolution rather than failing.
+**Native resolution is the default.** Each snap probes the camera's supported modes and
+captures at the highest still resolution it advertises. Photo modes vary by firmware, so
+this degrades gracefully: if the probe finds nothing, the capture proceeds at 1920x1080
+rather than failing. Pass `-r WxH` to force a smaller/faster mode.
 
 ```bash
-# default: IPEVO V4K, 1920x1080, into ~/Pictures/cameraboi/
+# default: IPEVO V4K at native resolution, into ~/Pictures/cameraboi/
 scripts/cameraboi snap
 
 # built-in camera, to an explicit path
 scripts/cameraboi snap -d "MacBook Pro Camera" -o /tmp/desk.jpg
 
-# document scan: highest available resolution, longer settle
-scripts/cameraboi snap --max --warmup 30
+# document scan in difficult light: longer settle
+scripts/cameraboi snap --warmup 30
 ```
 
 Prints the absolute path of the image as its last stdout line.
@@ -288,8 +289,9 @@ terminal application, at **System Settings → Privacy & Security → Camera**. 
 
 ## Defaults summary
 
-Device `IPEVO V4K`; resolution `1920x1080` at 30 fps (frame rate is mode-derived — the CLI
-probes the device's advertised modes and never requests an unsupported rate); `snap`
+Device `IPEVO V4K`; stills (`snap`/`burst`) at the device's **native** (highest
+advertised) resolution, video (`record`) at `1920x1080` (frame rate is mode-derived — the
+CLI probes the device's advertised modes and never requests an unsupported rate); `snap`
 warm-up of 15 frames; `burst` interval 2 s; `frames` count 12. Artifacts land in
 `~/Pictures/cameraboi/` (override with the `CAMERABOI_DIR` environment variable or `-o`):
 stills as `snap-<timestamp>.jpg`, clips as `rec-<timestamp>.mp4`, burst shots as
