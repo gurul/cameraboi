@@ -62,6 +62,7 @@ scripts/cameraboi <command> [options]
 | `burst` | `-n COUNT [-i SECONDS] [-o DIR]` | N stills at a fixed interval — timelapse or monitoring |
 | `frames` | `VIDEO [-n N] [-o DIR] [--sheet]` | Extract evenly spaced frames (default 12); `--sheet` tiles them into contact sheets |
 | `logs` | `[--tail N] [--failures] [--json]` | Query the capture event log — every capture records a JSONL event (exit code, duration, ffmpeg stderr) for debugging from evidence |
+| `clean` | `[--older-than AGE] [--logs] [--yes]` | Delete captured artifacts (`snap-*`, `rec-*`, `burst-*/`, `frames-*/`) from the capture dir; other files are untouched. **Dry run by default** — `--yes` deletes, `--older-than 7d/24h/30m` age-filters, `--logs` also clears the event log |
 | `doctor` | — | Verify ffmpeg, device, and a live 640x480 test capture; print permission guidance on failure and the last recorded capture failure |
 
 `-d` takes a case-insensitive substring (`-d ipevo`) or a numeric index (`-d 1`). Captures

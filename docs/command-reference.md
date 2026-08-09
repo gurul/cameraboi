@@ -20,6 +20,7 @@ everything is a flag.
 | `record` | Record an H.264 MP4 clip |
 | `burst` | Capture N stills at a fixed interval |
 | `frames` | Extract frames from a video, optionally as contact sheets |
+| `clean` | Delete captured artifacts from the capture directory (dry run by default) |
 | `doctor` | Check dependencies, device, and permission with a live test capture |
 
 ## Conventions that apply to every command
@@ -265,6 +266,44 @@ scripts/cameraboi logs --failures --json
 
 Log writes never interfere with capture — a failure to write the event is swallowed, and
 the log directory is created owner-only (`0700`).
+
+## clean
+
+Deletes captured artifacts from the capture directory. Captures are otherwise permanent —
+nothing in cameraBoi expires or garbage-collects them — so `clean` is the one sanctioned
+way to reclaim the space.
+
+```bash
+scripts/cameraboi clean [--older-than AGE] [--logs] [--yes]
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--older-than AGE` | no | Only items older than AGE — `7d`, `24h`, `30m`; a bare number means days |
+| `--logs` | no | Also delete the capture event log (`.sessions/events.jsonl`) |
+| `--yes`, `-y` | no | Actually delete. Without it, `clean` is a **dry run** |
+
+Only cameraboi-named artifacts at the top level of the capture directory are candidates:
+`snap-*.jpg` (including `-model` copies), `rec-*.mp4`, and whole `burst-*/` and `frames-*/`
+directories. Anything else in the folder — files you saved there under other names — is
+never touched, and the event log survives unless `--logs` is passed.
+
+```bash
+# see what would go (dry run is the default)
+scripts/cameraboi clean
+
+# delete captures older than a week
+scripts/cameraboi clean --older-than 7d --yes
+
+# wipe everything including the event log
+scripts/cameraboi clean --yes --logs
+```
+
+Prints the affected paths on stdout (both in dry-run and delete mode) and a count/size
+summary on stderr.
+
+> [!WARNING]
+> `--yes` deletes immediately and permanently — there is no trash. Run the dry run first.
 
 ## doctor
 

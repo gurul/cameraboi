@@ -692,6 +692,83 @@ for line in sys.stdin:
 '
 }
 
+# -------------------------------------------------------------------- clean --
+
+# Parse a human age ("7d", "24h", "30m", bare number = days) into minutes.
+age_to_minutes() {
+  local age="$1" n unit
+  [[ "$age" =~ ^([0-9]+)([dhm]?)$ ]] || return 1
+  n="${BASH_REMATCH[1]}"
+  unit="${BASH_REMATCH[2]}"
+  case "$unit" in
+    m) printf '%s\n' "$n" ;;
+    h) printf '%s\n' "$((n * 60))" ;;
+    *) printf '%s\n' "$((n * 1440))" ;;
+  esac
+}
+
+cmd_clean() {
+  local older="" yes=0 with_logs=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --older-than) older="${2:-}"; [ -n "$older" ] || die "--older-than requires an age (e.g. 7d, 24h, 30m)"; shift 2 ;;
+      --logs)       with_logs=1; shift ;;
+      --dry-run)    yes=0; shift ;;
+      -y|--yes)     yes=1; shift ;;
+      -h|--help)    usage; return 0 ;;
+      *) die "clean: unknown option '$1' (see: $PROG help)" ;;
+    esac
+  done
+
+  local -a agearg=()
+  if [ -n "$older" ]; then
+    local mins
+    mins="$(age_to_minutes "$older")" || die "--older-than must look like 7d, 24h or 30m"
+    agearg=(-mmin "+$mins")
+  fi
+
+  [ -d "$CAPTURE_DIR" ] || { log "clean: nothing to delete ($CAPTURE_DIR does not exist)"; return 0; }
+
+  # Only cameraboi-named artifacts at the top level of the capture dir; a
+  # burst-*/frames-* directory is matched (and aged) as a whole. Files the
+  # user placed here under other names are never touched.
+  local -a targets=()
+  while IFS= read -r -d '' p; do targets+=("$p"); done < <(
+    find "$CAPTURE_DIR" -mindepth 1 -maxdepth 1 \
+      \( -name 'snap-*.jpg' -o -name 'rec-*.mp4' \
+         -o \( -type d \( -name 'burst-*' -o -name 'frames-*' \) \) \) \
+      ${agearg[@]+"${agearg[@]}"} -print0 2>/dev/null | sort -z
+  )
+  if [ "$with_logs" -eq 1 ] && [ -f "$EVENTS_FILE" ]; then
+    targets+=("$EVENTS_FILE")
+  fi
+
+  if [ "${#targets[@]}" -eq 0 ]; then
+    log "clean: nothing to delete in $CAPTURE_DIR${older:+ older than $older}"
+    return 0
+  fi
+
+  local total_kb=0 kb
+  local p
+  for p in "${targets[@]}"; do
+    kb="$(du -sk "$p" 2>/dev/null | cut -f1 || true)"
+    [[ "$kb" =~ ^[0-9]+$ ]] && total_kb=$((total_kb + kb))
+  done
+
+  printf '%s\n' "${targets[@]}"
+  if [ "$yes" -eq 0 ]; then
+    log "clean: DRY RUN - would delete ${#targets[@]} item(s), ~$((total_kb / 1024)) MB${older:+ (older than $older)}"
+    log "clean: re-run with --yes to actually delete"
+    return 0
+  fi
+
+  for p in "${targets[@]}"; do
+    rm -rf "$p"
+  done
+  log "clean: deleted ${#targets[@]} item(s), freed ~$((total_kb / 1024)) MB from $CAPTURE_DIR"
+  return 0
+}
+
 # ------------------------------------------------------------------- doctor --
 
 cmd_doctor() {
@@ -855,6 +932,15 @@ COMMANDS
       --failures  only events with a non-zero exit code
       --json      raw JSONL instead of the human-readable rendering
 
+  clean [--older-than AGE] [--logs] [--yes]
+      Delete captured artifacts from $CAPTURE_DIR: snap-*.jpg (incl. -model
+      copies), rec-*.mp4, burst-*/ and frames-*/ directories. Files under
+      other names are never touched. DRY RUN by default - prints what would
+      be deleted; nothing is removed until --yes is passed.
+      --older-than AGE  only items older than AGE: 7d, 24h, 30m (bare N = days)
+      --logs            also delete the capture event log (events.jsonl)
+      --yes, -y         actually delete (default is a dry run)
+
   doctor [-d DEVICE]
       Verify ffmpeg, enumerate devices, confirm the default device is present
       and run a live 640x480 test capture. Exits 0 only if everything passes.
@@ -905,6 +991,7 @@ main() {
     burst)            cmd_burst "$@" ;;
     frames)           cmd_frames "$@" ;;
     logs)             cmd_logs "$@" ;;
+    clean)            cmd_clean "$@" ;;
     doctor)           cmd_doctor "$@" ;;
     help|-h|--help)   usage; exit 0 ;;
     *) die "unknown command '$cmd' (see: $PROG help)" ;;

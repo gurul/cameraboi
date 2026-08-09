@@ -117,6 +117,7 @@ a numeric index:
 | `burst` | `-n COUNT` (required) `-i SECONDS` `-o DIR` | N stills at an interval — timelapse / watching a slow process |
 | `frames` | `VIDEO` (positional) `-n N` `-o DIR` `--sheet` | Extracts N evenly-spaced frames (default 12); `--sheet` also tiles them into contact sheet(s) |
 | `logs` | `--tail N` `--failures` `--json` | Queries the capture event log (default last 20, cap 200) — every capture appends one JSONL event (cmd, device, exit code, duration, artifact, ffmpeg stderr) |
+| `clean` | `--older-than AGE` `--logs` `--yes` | Deletes captured artifacts (`snap-*`, `rec-*`, `burst-*/`, `frames-*/`) from the capture dir; other files are never touched. **Dry run by default** — lists what would go; only `--yes` deletes. `--older-than 7d/24h/30m` age-filters; `--logs` also clears the event log. Deleting the user's captures is destructive: run without `--yes` first and confirm with the user unless they already asked for the deletion |
 | `doctor` | — | Verifies ffmpeg, device presence, runs a live 640x480 test capture, and surfaces the last recorded capture failure |
 
 Output contract for every command: **the last stdout line(s) are the absolute paths of
@@ -150,7 +151,8 @@ exit code, ffmpeg stderr, timing — so debug from the log, not from blind rerun
 ## Conventions
 
 - Captures land in `~/Pictures/cameraboi/` unless `-o` is given. Pass `-o` when the
-  artifact belongs to the work at hand (e.g. a scan destined for the repo).
+  artifact belongs to the work at hand (e.g. a scan destined for the repo). Captures
+  persist until deleted — when the user wants them gone, use `clean` (dry-run first).
 - Prefer one good snap over many. Take a second only when the first is unreadable or the
   user changed the scene.
 - Announce what was captured and where it landed, so the user can find the file.
