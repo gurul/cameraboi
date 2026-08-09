@@ -114,15 +114,10 @@ this. In difficult light, give it longer:
 scripts/cameraboi snap --warmup 30
 ```
 
-For document and whiteboard scans, combine a longer warm-up with the high-resolution mode:
-
-```bash
-scripts/cameraboi snap --max --warmup 30
-```
-
-If `--max` produces nothing better than the standard capture, the camera's firmware does not
-advertise a higher still mode — `--max` degrades gracefully rather than failing, so this is
-expected on some V4K firmware revisions.
+Stills already capture at the camera's highest advertised (native) resolution by default.
+If a capture comes out no larger than 1920x1080, the camera's firmware does not advertise
+a higher still mode — the native-mode probe degrades gracefully rather than failing, so
+this is expected on some V4K firmware revisions.
 
 ## Claude captured something but did not look at it
 
