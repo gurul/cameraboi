@@ -67,6 +67,23 @@ scripts/cameraboi <command> [options]
 `-d` takes a case-insensitive substring (`-d ipevo`) or a numeric index (`-d 1`). Captures
 land in `~/Pictures/cameraboi/` unless `-o` says otherwise.
 
+### CV tools — `scripts/cameraboi-cv`
+
+Deterministic computer vision on top of the captures, for what vision models can't do by
+looking: **calibrated millimeter measurement** and **exact counting / batch scan
+cleanup**. Self-bootstraps a venv in `cv/.venv` on first run; same last-stdout-lines
+artifact contract.
+
+| Command | What it does |
+|---|---|
+| `mat` / `board` | Generate the printable ArUco measuring mat and ChArUco calibration board |
+| `calibrate DIR` | One-time lens intrinsics from ~15 stills of the board |
+| `measure IMG` | mm dimensions of objects on the mat (±0.2–0.5 mm flat-object accuracy; scale re-derived per shot, so camera height can change freely) |
+| `count IMG` | Exact object count — watershed splits touching objects; annotated image to verify |
+| `scan INPUTS…` | Batch page detection, perspective correction, enhancement (`--mode color/gray/bw`) |
+
+See [docs/cv-tools.md](docs/cv-tools.md) for setup and the accuracy contract.
+
 ```bash
 scripts/cameraboi snap
 scripts/cameraboi snap -d "MacBook Pro Camera" -o /tmp/desk.jpg

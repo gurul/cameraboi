@@ -1,0 +1,7 @@
+# Grounded against PyPI at install time (2026-08-09): opencv-python-headless 5.0.0.93,
+# numpy 2.0.2, pillow 11.3.0, pytest 8.4.2. The aruco ArucoDetector/CharucoDetector
+# API used here requires opencv >= 4.8.
+opencv-python-headless>=4.8
+numpy>=1.26
+pillow>=10
+pytest>=8

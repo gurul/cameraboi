@@ -1,3 +1,6 @@
 .DS_Store
 captures/
 scripts/cameraboi-af
+cv/.venv/
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# cameraboi-cv — deterministic CV companion to cameraboi (measure / count / scan).
+# Self-bootstraps a venv in cv/.venv on first run. Same output contract:
+# the LAST stdout line(s) are artifact paths; diagnostics go to stderr.
+set -euo pipefail
+
+_self="$0"
+[ -L "$_self" ] && _self="$(readlink "$_self")"
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd -P)"
+CV_DIR="$SCRIPT_DIR/../cv"
+VENV="$CV_DIR/.venv"
+
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "cameraboi-cv: first run — creating venv and installing requirements..." >&2
+  python3 -m venv "$VENV"
+  "$VENV/bin/pip" install --quiet --upgrade pip
+  "$VENV/bin/pip" install --quiet -r "$CV_DIR/requirements.txt"
+fi
+
+cd "$CV_DIR"
+exec "$VENV/bin/python" -m cameraboi_cv.cli "$@"

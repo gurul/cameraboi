@@ -64,6 +64,37 @@ when the sound matters to the user's own playback (Claude does not transcribe au
 Each produced path is printed. Read the first and last to judge change; Read the
 in-between frames only when something actually moved.
 
+## Precision & exactness — the cameraboi-cv companion
+
+For **measurements in mm**, **exact counts**, or **batch scan cleanup**, do not estimate
+from the image — shell out to the deterministic CV CLI:
+
+```
+~/Documents/work/cameraBoi/scripts/cameraboi-cv
+```
+
+(first run bootstraps its own venv; same contract — last stdout lines are artifact paths)
+
+- **"How big is this?"** → object on the printed measuring mat → `snap --full --no-open`
+  → `cameraboi-cv measure <img>` → JSON in mm + an annotated image. **Read the annotated
+  image** to confirm the segmentation grabbed the right object before reporting numbers.
+  Requires the mat (one-time: `cameraboi-cv mat`, print at 100%). If the command refuses
+  because markers are missing, tell the user to uncover the mat corners — never
+  eyeball-estimate dimensions instead. Flat objects: ±0.2–0.5 mm. Tall objects read
+  large unless `--object-height`/`--camera-height` are given — say so.
+- **"How many are there?"** → `cameraboi-cv count <img>` → exact count + numbered
+  annotated image. Read the annotation and sanity-check it against the scene; tune
+  `--min-area` / `--min-sep` if the segmentation visibly missed or merged objects.
+  For piles too jumbled to segment, say counting needs the objects spread out.
+- **"Scan these pages"** → snap each page, then `cameraboi-cv scan <dir> --mode bw`
+  (or `gray`) → deskewed, perspective-corrected, shadow-free pages. Read the cleaned
+  outputs for transcription — they OCR better than raw photos.
+- One-time lens calibration sharpens measurement at the frame edges:
+  `cameraboi-cv board` → print → ~15 varied snaps → `cameraboi-cv calibrate <dir>`.
+
+Claude's vision judges *what* things are; `cameraboi-cv` supplies the numbers. Combine
+them: measure/count with the CLI, verify with a Read, describe with vision.
+
 ## Device selection
 
 Default is the **IPEVO V4K** document camera. `-d` takes a case-insensitive substring or
