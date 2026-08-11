@@ -43,6 +43,10 @@ OBJECT_SAT_MIN = 60   # saturated enough to be a colored object
 OBJECT_VAL_MIN = 40   # not so dark it's segmented by gray threshold anyway
 SHADOW_SAT_MAX = 50   # unsaturated ...
 SHADOW_VAL_MIN = 100  # ... but too bright to be a dark object = shadow on paper
+# If "saturated" pixels cover more than this fraction of the sheet, the paper
+# itself is tinted (direct sunlight, colored lamp) and saturation stops meaning
+# "object" — auto then drops the color cue instead of segmenting the sheet.
+COLOR_CUE_MAX_FRAC = 0.5
 
 
 def _detector(dict_name: str) -> cv2.aruco.ArucoDetector:
@@ -80,8 +84,12 @@ def segment(rect_color: np.ndarray, rect_gray: np.ndarray, seg: str,
 
     shadow = ((sat < SHADOW_SAT_MAX) & (val > SHADOW_VAL_MIN)) \
         .astype(np.uint8) * 255
-    return cv2.bitwise_or(
-        cv2.bitwise_and(gray_bin, cv2.bitwise_not(shadow)), color_bin)
+    deshadowed = cv2.bitwise_and(gray_bin, cv2.bitwise_not(shadow))
+    if np.count_nonzero(color_bin) > COLOR_CUE_MAX_FRAC * color_bin.size:
+        print("measure: note — most of the sheet reads as saturated (tinted "
+              "light?); ignoring the color cue for this shot")
+        return deshadowed
+    return cv2.bitwise_or(deshadowed, color_bin)
 
 
 def estimate_camera_height(

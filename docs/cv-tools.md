@@ -60,6 +60,10 @@ even where a gray threshold would drop them — e.g. a brightly-lit chamfered ed
 objects, which the shadow test cannot distinguish from shadow); `--seg color` keeps
 only saturated pixels and is the precision choice for a colored object, since the dark
 contact shadow hugging an object's base is ambiguous in gray but invisible in color.
+Color cues assume neutral light on white paper: under tinted light (direct sun, warm
+lamps) the paper itself reads saturated, so `auto` detects that and falls back to the
+gray path with a warning, and `--seg color` should not be used. Diffuse neutral light
+is what gets the last few tenths of a millimeter.
 
 Accuracy: **±0.2–0.5 mm for flat objects** with the mat verified and intrinsics
 calibrated. Tall objects read large by roughly `height / camera distance`; pass

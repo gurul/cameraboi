@@ -138,6 +138,28 @@ def test_auto_seg_rejects_shadow_and_keeps_lit_fringe(tmp_path):
     assert gray["height_mm"] < true_h - 1.0      # fringe dropped
 
 
+def test_auto_seg_drops_color_cue_when_paper_is_tinted(tmp_path):
+    """Direct sunlight tints the whole sheet warm-saturated; 'saturated pixel'
+    stops meaning 'object'. auto must fall back to the gray path instead of
+    segmenting the entire sheet as one blob."""
+    png, meta = generate_mat(tmp_path)
+    g = cv2.imread(str(png), cv2.IMREAD_GRAYSCALE)
+    sheet = cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+    sheet[g > 200] = (180, 220, 255)  # warm-tinted paper, clearly saturated
+
+    x, y = int(RECT_AT[0] * PX_PER_MM), int(RECT_AT[1] * PX_PER_MM)
+    w, h = int(RECT_MM[0] * PX_PER_MM), int(RECT_MM[1] * PX_PER_MM)
+    cv2.rectangle(sheet, (x, y), (x + w, y + h), (200, 130, 50), -1)
+
+    shot = tmp_path / "tinted-shot.png"
+    cv2.imwrite(str(shot), sheet)
+
+    result = measure_image(shot, meta)
+    rect = max(result["objects"], key=lambda o: o["area_mm2"])
+    assert rect["width_mm"] == pytest.approx(RECT_MM[0], abs=0.4)
+    assert rect["height_mm"] == pytest.approx(RECT_MM[1], abs=0.4)
+
+
 def test_camera_height_estimation_from_markers():
     """Synthetic pinhole camera 372mm above the mat: PnP on the projected
     marker corners must recover the height."""
