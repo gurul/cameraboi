@@ -127,12 +127,15 @@ def test_auto_seg_rejects_shadow_and_keeps_lit_fringe(tmp_path):
     true_w = RECT_MM[0] + 2 * fringe_mm
     true_h = RECT_MM[1] + 2 * fringe_mm
 
-    auto = max(measure_image(shot, meta, thresh=180)["objects"],
+    # refine=False: this test isolates the segmentation layer; gradient
+    # refinement has its own test on a physically-consistent scene.
+    auto = max(measure_image(shot, meta, thresh=180, refine=False)["objects"],
                key=lambda o: o["area_mm2"])
     assert auto["width_mm"] == pytest.approx(true_w, abs=0.4)
     assert auto["height_mm"] == pytest.approx(true_h, abs=0.4)
 
-    gray = max(measure_image(shot, meta, thresh=180, seg="gray")["objects"],
+    gray = max(measure_image(shot, meta, thresh=180, seg="gray",
+                             refine=False)["objects"],
                key=lambda o: o["area_mm2"])
     assert gray["width_mm"] > RECT_MM[0] + 3.0   # shadow swallowed
     assert gray["height_mm"] < true_h - 1.0      # fringe dropped
@@ -158,6 +161,62 @@ def test_auto_seg_drops_color_cue_when_paper_is_tinted(tmp_path):
     rect = max(result["objects"], key=lambda o: o["area_mm2"])
     assert rect["width_mm"] == pytest.approx(RECT_MM[0], abs=0.4)
     assert rect["height_mm"] == pytest.approx(RECT_MM[1], abs=0.4)
+
+
+def test_color_seg_rejects_tinted_saturated_shadow(tmp_path):
+    """A warm-tinted shadow (S~70 — above the fixed floor) touching a strongly
+    saturated blue part: the adaptive saturation core plus hue matching must
+    exclude the shadow while keeping the part."""
+    png, meta = generate_mat(tmp_path)
+    sheet = cv2.cvtColor(cv2.imread(str(png), cv2.IMREAD_GRAYSCALE),
+                         cv2.COLOR_GRAY2BGR)
+
+    x, y = int(RECT_AT[0] * PX_PER_MM), int(RECT_AT[1] * PX_PER_MM)
+    w, h = int(RECT_MM[0] * PX_PER_MM), int(RECT_MM[1] * PX_PER_MM)
+    # warm shadow (hue ~20, S~75) hugging the part's right edge and below
+    cv2.rectangle(sheet, (x + w, y), (x + w + int(15 * PX_PER_MM), y + h),
+                  (130, 160, 185), -1)
+    cv2.rectangle(sheet, (x, y + h), (x + w, y + h + int(12 * PX_PER_MM)),
+                  (130, 160, 185), -1)
+    # strongly saturated blue part
+    cv2.rectangle(sheet, (x, y), (x + w, y + h), (200, 130, 50), -1)
+
+    shot = tmp_path / "warm-shadow-shot.png"
+    cv2.imwrite(str(shot), sheet)
+
+    obj = max(measure_image(shot, meta, seg="color", refine=False)["objects"],
+              key=lambda o: o["area_mm2"])
+    assert obj["width_mm"] == pytest.approx(RECT_MM[0], abs=0.4)
+    assert obj["height_mm"] == pytest.approx(RECT_MM[1], abs=0.4)
+
+
+def test_refine_snaps_through_soft_shadow_ramp(tmp_path):
+    """A soft penumbra ramping over ~4mm beside the object fools thresholding,
+    but its gradient is weak: side refinement must snap the box back to the
+    sharp object edge. Also serves as the subpixel accuracy check."""
+    png, meta = generate_mat(tmp_path)
+    sheet = cv2.imread(str(png), cv2.IMREAD_GRAYSCALE)
+
+    x, y = int(RECT_AT[0] * PX_PER_MM), int(RECT_AT[1] * PX_PER_MM)
+    w, h = int(RECT_MM[0] * PX_PER_MM), int(RECT_MM[1] * PX_PER_MM)
+    # soft shadow: ramps from object-dark up to paper over 4mm to the right
+    ramp_w = int(4.0 * PX_PER_MM)
+    ramp = np.linspace(100, 255, ramp_w).astype(np.uint8)
+    sheet[y:y + h, x + w:x + w + ramp_w] = ramp[None, :]
+    cv2.rectangle(sheet, (x, y), (x + w, y + h), 40, -1)
+
+    shot = tmp_path / "penumbra-shot.png"
+    cv2.imwrite(str(shot), sheet)
+
+    coarse = max(measure_image(shot, meta, thresh=160, seg="gray",
+                               refine=False)["objects"],
+                 key=lambda o: o["area_mm2"])
+    assert coarse["width_mm"] > RECT_MM[0] + 1.2  # thresholding eats the ramp
+
+    fine = max(measure_image(shot, meta, thresh=160, seg="gray")["objects"],
+               key=lambda o: o["area_mm2"])
+    assert fine["width_mm"] == pytest.approx(RECT_MM[0], abs=0.25)
+    assert fine["height_mm"] == pytest.approx(RECT_MM[1], abs=0.25)
 
 
 def test_camera_height_estimation_from_markers():

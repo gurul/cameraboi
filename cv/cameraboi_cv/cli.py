@@ -59,6 +59,7 @@ def cmd_measure(args) -> None:
         camera_height_mm=args.camera_height,
         thresh=args.thresh,
         seg=args.seg,
+        refine=not args.no_refine,
     )
     _emit(result, ("annotated",))
 
@@ -121,6 +122,8 @@ def main(argv: list[str] | None = None) -> None:
                         "pixels; gray is the pure darker-than-paper threshold "
                         "(use for neutral-gray objects); color keeps only "
                         "saturated pixels")
+    s.add_argument("--no-refine", action="store_true",
+                   help="skip subpixel gradient refinement of box sides")
     s.set_defaults(fn=cmd_measure)
 
     s = sub.add_parser("count", help="count distinct objects in an image")

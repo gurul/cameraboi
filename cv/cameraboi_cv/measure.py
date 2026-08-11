@@ -39,7 +39,13 @@ WORK_AREA_PAD_MM = 6.0  # exclusion band around markers and the sheet border
 # is an unsaturated, still-fairly-bright version of the paper; a colored object
 # is saturated at any brightness. Mid-gray objects satisfy neither test — use
 # seg="gray" for those.
-OBJECT_SAT_MIN = 60   # saturated enough to be a colored object
+OBJECT_SAT_MIN = 60   # floor: saturated enough to possibly be a colored object
+OBJECT_SAT_REL = 0.6  # core threshold scales to the scene: 60% of the p95
+                      # saturation, so a mildly-tinted shadow (S~70) never joins
+                      # a strongly-saturated part (S~180)
+OBJECT_HUE_TOL = 15   # mid-saturation pixels join only within this hue distance
+                      # of the core object's hue (keeps same-material lit
+                      # chamfers, drops differently-tinted shadows)
 OBJECT_VAL_MIN = 40   # not so dark it's segmented by gray threshold anyway
 SHADOW_SAT_MAX = 50   # unsaturated ...
 SHADOW_VAL_MIN = 100  # ... but too bright to be a dark object = shadow on paper
@@ -47,6 +53,21 @@ SHADOW_VAL_MIN = 100  # ... but too bright to be a dark object = shadow on paper
 # itself is tinted (direct sunlight, colored lamp) and saturation stops meaning
 # "object" — auto then drops the color cue instead of segmenting the sheet.
 COLOR_CUE_MAX_FRAC = 0.5
+
+# Subpixel side refinement: an object's silhouette edge is a sharp intensity
+# step while a shadow penumbra ramps over millimeters, so snapping each
+# min-area-rect side to the strongest gradient along its normal both removes
+# soft-shadow bias and beats the pixel quantization of the contour.
+REFINE_SEARCH_MM = 4.0   # how far to look INWARD of the coarse edge (shadow shed)
+REFINE_OUT_MM = 2.5      # outward slack: enough to recover mask erosion at
+                         # brightly-lit (desaturated) edges, still short of
+                         # where a distinct neighbor or hard shadow edge would
+                         # plausibly sit
+REFINE_STEP_MM = 0.1     # profile sampling pitch along the normal
+REFINE_END_TRIM = 0.15   # fraction of each side skipped at both ends (corners)
+REFINE_MIN_GRAD_FRAC = 0.4  # qualifying bar, vs the strongest gradient seen
+REFINE_SUPPORT_PCTL = 90  # support line = high percentile of per-scan edges,
+                          # so curved sides keep their outermost (tangent) extent
 
 
 def _detector(dict_name: str) -> cv2.aruco.ArucoDetector:
@@ -76,20 +97,40 @@ def segment(rect_color: np.ndarray, rect_gray: np.ndarray, seg: str,
 
     hsv = cv2.cvtColor(cv2.GaussianBlur(rect_color, (5, 5), 0),
                        cv2.COLOR_BGR2HSV)
-    sat, val = hsv[..., 1], hsv[..., 2]
-    color_bin = ((sat >= OBJECT_SAT_MIN) & (val >= OBJECT_VAL_MIN)) \
-        .astype(np.uint8) * 255
+    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    cand = sat >= OBJECT_SAT_MIN
+    # core threshold scales to the saturation of the candidate pixels, so a
+    # mildly-tinted shadow can't ride in under a strongly-saturated part
+    sat_core = max(OBJECT_SAT_MIN,
+                   OBJECT_SAT_REL * float(np.percentile(sat[cand], 95))) \
+        if cand.any() else 255.0
+    core = (sat >= sat_core) & (val >= OBJECT_VAL_MIN)
+    if core.any():
+        # circular median hue of the core object, then admit mid-saturation
+        # pixels of matching hue (lit chamfer edges of the same material)
+        ang = hue[core].astype(np.float64) * (np.pi / 90.0)
+        med = (np.arctan2(np.sin(ang).mean(), np.cos(ang).mean()) * 90.0 / np.pi) % 180
+        dh = np.abs(((hue.astype(np.int16) - med + 90) % 180) - 90)
+        kin = (sat >= OBJECT_SAT_MIN) & (val >= OBJECT_VAL_MIN) & (dh <= OBJECT_HUE_TOL)
+        color_bin = (core | kin).astype(np.uint8) * 255
+    else:
+        color_bin = core.astype(np.uint8) * 255
     if seg == "color":
         return color_bin
 
     shadow = ((sat < SHADOW_SAT_MAX) & (val > SHADOW_VAL_MIN)) \
         .astype(np.uint8) * 255
     deshadowed = cv2.bitwise_and(gray_bin, cv2.bitwise_not(shadow))
-    if np.count_nonzero(color_bin) > COLOR_CUE_MAX_FRAC * color_bin.size:
+    core_frac = np.count_nonzero(core) / core.size
+    if core_frac > COLOR_CUE_MAX_FRAC:
         print("measure: note — most of the sheet reads as saturated (tinted "
               "light?); ignoring the color cue for this shot")
         return deshadowed
-    return cv2.bitwise_or(deshadowed, color_bin)
+    if core_frac >= 0.001:
+        # a plausible colored object exists: the color channel is strictly
+        # better informed than gray (it knows shadows aren't the object)
+        return color_bin
+    return deshadowed
 
 
 def estimate_camera_height(
@@ -111,6 +152,77 @@ def estimate_camera_height(
     return float(abs(rot[:, 2] @ tvec.ravel()))
 
 
+def refine_box(gray_rect: np.ndarray, rect: tuple, px_per_mm: float) -> tuple:
+    """Snap each min-area-rect side to the strongest intensity gradient along
+    its outward normal, with parabolic subpixel interpolation.
+
+    Returns ((cx, cy), (w, h), angle) with per-side offsets applied, or the
+    input rect unchanged when no side finds a usable gradient.
+    """
+    (cx, cy), (w, h), angle = rect
+    corners = cv2.boxPoints(rect)  # 4x2, consecutive
+    search_px = REFINE_SEARCH_MM * px_per_mm
+    out_px = REFINE_OUT_MM * px_per_mm
+    step_px = REFINE_STEP_MM * px_per_mm
+    n_steps = int((search_px + out_px) / step_px) + 1
+    ts = np.linspace(-search_px, out_px, n_steps)
+
+    offsets = []
+    for k in range(4):
+        c1, c2 = corners[k], corners[(k + 1) % 4]
+        side = c2 - c1
+        length = float(np.hypot(*side))
+        d = side / max(length, 1e-9)
+        normal = np.array([d[1], -d[0]])
+        if np.dot(normal, c1 - np.array([cx, cy])) < 0:
+            normal = -normal  # ensure outward
+
+        fracs = np.linspace(REFINE_END_TRIM, 1 - REFINE_END_TRIM,
+                            max(int(length / px_per_mm), 5))
+        bases = c1[None, :] + fracs[:, None] * side[None, :]
+        # sample all scanline profiles for this side in one remap
+        coords = bases[:, None, :] + ts[None, :, None] * normal[None, None, :]
+        map_x = coords[..., 0].astype(np.float32)
+        map_y = coords[..., 1].astype(np.float32)
+        profiles = cv2.remap(gray_rect.astype(np.float32), map_x, map_y,
+                             cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        grads = np.abs(np.gradient(profiles, axis=1))
+        grads[:, 0] = grads[:, -1] = 0.0
+        peaks = grads.max(axis=1)
+        keep = peaks >= REFINE_MIN_GRAD_FRAC * peaks.max() if peaks.max() > 0 else []
+        subs = []
+        for i in np.flatnonzero(keep):
+            g = grads[i]
+            # the silhouette edge is the OUTERMOST strong gradient, not the
+            # strongest: a lit chamfer's inner edge can out-gradient the true
+            # outer boundary, and a soft penumbra never qualifies at all.
+            local_max = (g >= np.roll(g, 1)) & (g >= np.roll(g, -1))
+            qualifying = local_max & (g >= REFINE_MIN_GRAD_FRAC * peaks[i])
+            qualifying[0] = qualifying[-1] = False
+            if not qualifying.any():
+                continue
+            m = int(np.flatnonzero(qualifying).max())
+            g0, g1, g2 = g[m - 1:m + 2]
+            denom = g0 - 2 * g1 + g2
+            frac = 0.5 * (g0 - g2) / denom if abs(denom) > 1e-9 else 0.0
+            subs.append(ts[m] + np.clip(frac, -1, 1) * step_px)
+        offsets.append(float(np.percentile(subs, REFINE_SUPPORT_PCTL)) if subs else 0.0)
+
+    # sides from boxPoints alternate: 0-1, 1-2 span the two dimensions
+    dim_a = float(np.hypot(*(corners[1] - corners[0])))
+    dim_b = float(np.hypot(*(corners[2] - corners[1])))
+    new_a = dim_a + offsets[1] + offsets[3]
+    new_b = dim_b + offsets[0] + offsets[2]
+    if new_a <= 0 or new_b <= 0:
+        return rect
+    # map refined side lengths back onto the rect's (w, h) slots
+    if abs(dim_a - w) <= abs(dim_a - h):
+        new_w, new_h = new_a, new_b
+    else:
+        new_w, new_h = new_b, new_a
+    return ((cx, cy), (new_w, new_h), angle)
+
+
 def load_mat(mat_json: Path) -> dict:
     data = json.loads(Path(mat_json).read_text())
     if data.get("kind") != "cameraboi-measure-mat":
@@ -128,6 +240,7 @@ def measure_image(
     camera_height_mm: float = 0.0,
     thresh: int | None = None,
     seg: str = "auto",
+    refine: bool = True,
 ) -> dict:
     image_path = Path(image_path)
     img = cv2.imread(str(image_path))
@@ -233,7 +346,10 @@ def measure_image(
         area_mm2 = cv2.contourArea(c) * to_mm * to_mm
         if area_mm2 < min_area_mm2:
             continue
-        (cx, cy), (w, h), angle = cv2.minAreaRect(c)
+        rect = cv2.minAreaRect(c)
+        if refine:
+            rect = refine_box(rectified, rect, px_per_mm)
+        (cx, cy), (w, h), angle = rect
         w_mm, h_mm = sorted((w * to_mm, h * to_mm), reverse=True)
         objects.append({
             "id": len(objects) + 1,
@@ -261,6 +377,7 @@ def measure_image(
         "fit_residual_mm": round(residual_mm, 3),
         "scale_correction": scale_correction,
         "seg": seg,
+        "refined": refine,
         "camera_height_mm": round(camera_height_mm, 1) if camera_height_mm > 0 else None,
         "camera_height_source": camera_height_source,
         "object_count": len(objects),
