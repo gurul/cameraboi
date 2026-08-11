@@ -53,10 +53,22 @@ be visible — the command refuses loudly rather than guessing. Output is JSON (
 height, area, perimeter, center, angle per object, plus the homography fit residual in
 mm as an honesty check) and an annotated image with the dimensions drawn on.
 
+Segmentation is **color-aware by default** (`--seg auto`): cast shadows on the white
+mat (unsaturated but still bright) are rejected, and saturated colored pixels are kept
+even where a gray threshold would drop them — e.g. a brightly-lit chamfered edge.
+`--seg gray` restores the plain darker-than-paper threshold (use it for neutral-gray
+objects, which the shadow test cannot distinguish from shadow); `--seg color` keeps
+only saturated pixels and is the precision choice for a colored object, since the dark
+contact shadow hugging an object's base is ambiguous in gray but invisible in color.
+
 Accuracy: **±0.2–0.5 mm for flat objects** with the mat verified and intrinsics
 calibrated. Tall objects read large by roughly `height / camera distance`; pass
-`--object-height` and `--camera-height` to correct for a known thickness, or measure
-the base contour with calipers when it truly matters.
+`--object-height` with the part thickness to correct. The camera height is estimated
+automatically from the markers when intrinsics exist (reported as
+`camera_height_mm` / `camera_height_source` in the JSON) — without intrinsics, pass
+`--camera-height` too. A worked example: a 15 mm-tall 3D-printed shell measured
+`--seg color --object-height 14.4 --camera-height 372` landed within 0.15 mm of CAD
+on both axes, from a raw uncorrected error of +6.6 mm.
 
 ## Counting
 

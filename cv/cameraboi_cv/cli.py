@@ -58,6 +58,7 @@ def cmd_measure(args) -> None:
         object_height_mm=args.object_height,
         camera_height_mm=args.camera_height,
         thresh=args.thresh,
+        seg=args.seg,
     )
     _emit(result, ("annotated",))
 
@@ -115,6 +116,11 @@ def main(argv: list[str] | None = None) -> None:
                    help="lens-to-mat distance in mm (needed with --object-height)")
     s.add_argument("--thresh", type=int, default=None,
                    help="manual 0-255 threshold instead of Otsu")
+    s.add_argument("--seg", choices=("auto", "gray", "color"), default="auto",
+                   help="segmentation: auto rejects shadows and keeps colored "
+                        "pixels; gray is the pure darker-than-paper threshold "
+                        "(use for neutral-gray objects); color keeps only "
+                        "saturated pixels")
     s.set_defaults(fn=cmd_measure)
 
     s = sub.add_parser("count", help="count distinct objects in an image")

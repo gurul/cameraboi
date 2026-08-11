@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from cameraboi_cv.boards import generate_mat
-from cameraboi_cv.measure import measure_image
+from cameraboi_cv.measure import estimate_camera_height, measure_image
 
 DPI = 300
 PX_PER_MM = DPI / 25.4
@@ -83,6 +83,83 @@ def test_scale_correction_applies(synthetic_shot, tmp_path):
     rect_b = max(base["objects"], key=lambda o: o["area_mm2"])
     rect_s = max(scaled["objects"], key=lambda o: o["area_mm2"])
     assert rect_s["width_mm"] == pytest.approx(rect_b["width_mm"] * 1.02, abs=0.05)
+
+
+def test_object_height_correction_scales_down(synthetic_shot):
+    shot, meta = synthetic_shot
+    base = measure_image(shot, meta)
+    corrected = measure_image(shot, meta, object_height_mm=15.0,
+                              camera_height_mm=300.0)
+    rect_b = max(base["objects"], key=lambda o: o["area_mm2"])
+    rect_c = max(corrected["objects"], key=lambda o: o["area_mm2"])
+    factor = (300.0 - 15.0) / 300.0
+    assert rect_c["width_mm"] == pytest.approx(rect_b["width_mm"] * factor, abs=0.05)
+    assert corrected["camera_height_mm"] == 300.0
+    assert corrected["camera_height_source"] == "given"
+
+
+def test_auto_seg_rejects_shadow_and_keeps_lit_fringe(tmp_path):
+    """A colored object with a bright low-saturation shadow beside it and a
+    pale (but saturated) lit fringe around it: gray segmentation swallows the
+    shadow and drops the fringe; auto does the opposite, matching the truth."""
+    png, meta = generate_mat(tmp_path)
+    sheet = cv2.cvtColor(cv2.imread(str(png), cv2.IMREAD_GRAYSCALE),
+                         cv2.COLOR_GRAY2BGR)
+
+    fringe_mm = 2.0
+    x, y = int(RECT_AT[0] * PX_PER_MM), int(RECT_AT[1] * PX_PER_MM)
+    w, h = int(RECT_MM[0] * PX_PER_MM), int(RECT_MM[1] * PX_PER_MM)
+    f = int(fringe_mm * PX_PER_MM)
+    shadow_w = int(5.0 * PX_PER_MM)
+    # lit fringe (chamfer catching light): pale but clearly saturated blue
+    cv2.rectangle(sheet, (x - f, y - f), (x + w + f, y + h + f),
+                  (255, 210, 170), -1)
+    # cast shadow touching the object's right edge: unsaturated, darker than
+    # paper, brighter than a dark object
+    cv2.rectangle(sheet, (x + w, y), (x + w + shadow_w, y + h),
+                  (150, 150, 150), -1)
+    # object body: saturated mid-blue
+    cv2.rectangle(sheet, (x, y), (x + w, y + h), (200, 130, 50), -1)
+
+    shot = tmp_path / "color-shot.png"
+    cv2.imwrite(str(shot), sheet)
+
+    true_w = RECT_MM[0] + 2 * fringe_mm
+    true_h = RECT_MM[1] + 2 * fringe_mm
+
+    auto = max(measure_image(shot, meta, thresh=180)["objects"],
+               key=lambda o: o["area_mm2"])
+    assert auto["width_mm"] == pytest.approx(true_w, abs=0.4)
+    assert auto["height_mm"] == pytest.approx(true_h, abs=0.4)
+
+    gray = max(measure_image(shot, meta, thresh=180, seg="gray")["objects"],
+               key=lambda o: o["area_mm2"])
+    assert gray["width_mm"] > RECT_MM[0] + 3.0   # shadow swallowed
+    assert gray["height_mm"] < true_h - 1.0      # fringe dropped
+
+
+def test_camera_height_estimation_from_markers():
+    """Synthetic pinhole camera 372mm above the mat: PnP on the projected
+    marker corners must recover the height."""
+    from cameraboi_cv.boards import mat_marker_positions
+
+    height = 372.0
+    positions = mat_marker_positions()
+    mm_pts = np.concatenate([np.asarray(positions[i], np.float64)
+                             for i in sorted(positions)])
+    obj = np.hstack([mm_pts, np.zeros((len(mm_pts), 1))])
+
+    k = np.array([[3000.0, 0, 1632], [0, 3000.0, 1224], [0, 0, 1]])
+    dist = np.zeros(5)
+    # camera straight above the sheet center, looking down
+    rot = np.diag([1.0, -1.0, -1.0])
+    center = np.array([148.5, 105.0, 0.0])
+    tvec = -rot @ center + np.array([0, 0, height])
+    rvec, _ = cv2.Rodrigues(rot)
+    img_pts, _ = cv2.projectPoints(obj, rvec, tvec, k, dist)
+
+    est = estimate_camera_height(img_pts.reshape(-1, 2), mm_pts, k, dist)
+    assert est == pytest.approx(height, abs=1.0)
 
 
 def test_refuses_without_enough_markers(synthetic_shot, tmp_path):
