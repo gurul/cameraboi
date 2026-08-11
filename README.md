@@ -79,7 +79,7 @@ artifact contract.
 |---|---|
 | `mat` / `board` | Generate the printable ArUco measuring mat and ChArUco calibration board |
 | `calibrate DIR` | One-time lens intrinsics from ~15 stills of the board |
-| `measure IMG` | mm dimensions of objects on the mat (±0.2–0.5 mm flat-object accuracy; scale re-derived per shot, so camera height can change freely) |
+| `measure IMG` | mm dimensions of objects on the mat (±0.2–0.5 mm flat-object accuracy; shadow-rejecting color-aware segmentation by default, `--seg gray\|color` to override; tall objects corrected via `--object-height`, with camera height auto-estimated from the markers when intrinsics exist) |
 | `count IMG` | Exact object count — watershed splits touching objects; annotated image to verify |
 | `scan INPUTS…` | Batch page detection, perspective correction, enhancement (`--mode color/gray/bw`) |
 

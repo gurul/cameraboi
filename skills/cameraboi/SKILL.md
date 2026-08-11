@@ -82,7 +82,11 @@ from the image — shell out to the deterministic CV CLI:
   Requires the mat (one-time: `cameraboi-cv mat`, print at 100%). If the command refuses
   because markers are missing, tell the user to uncover the mat corners — never
   eyeball-estimate dimensions instead. Flat objects: ±0.2–0.5 mm. Tall objects read
-  large unless `--object-height`/`--camera-height` are given — say so.
+  large by ~`thickness / camera height` unless `--object-height` is given (camera
+  height auto-estimates from the markers once intrinsics are calibrated; else pass
+  `--camera-height` too) — say so. Shadows are rejected by default (`--seg auto`);
+  for a colored object prefer `--seg color` (immune to the dark contact shadow at
+  the base), and for a neutral-gray object use `--seg gray`.
 - **"How many are there?"** → `cameraboi-cv count <img>` → exact count + numbered
   annotated image. Read the annotation and sanity-check it against the scene; tune
   `--min-area` / `--min-sep` if the segmentation visibly missed or merged objects.
