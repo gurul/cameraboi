@@ -85,6 +85,22 @@ artifact contract.
 
 See [docs/cv-tools.md](docs/cv-tools.md) for setup and the accuracy contract.
 
+### MCP vision servers — OCR and local VLMs
+
+Three local MCP servers (registered in the workspace `.mcp.json`) round out the vision
+stack — no API keys, captures never leave the machine:
+
+- **`vlm`** (`scripts/cameraboi-vlm serve`) — the primary semantic-vision server:
+  Qwen3-VL 4-bit on [MLX-VLM](https://github.com/Blaizzy/mlx-vlm), resident in memory.
+  Captioning, VQA, text transcription, and reliable open-vocabulary bounding boxes in
+  ~6 s per call on Apple Silicon.
+- **`ocr`** ([ocrtool-mcp](https://github.com/ihugang/ocrtool-mcp), `bin/ocrtool-mcp`) —
+  verbatim text extraction via the Apple Vision framework, with per-line bounding boxes.
+- **`moondream`** ([moondream-mcp](https://github.com/ColeMurray/moondream-mcp), via
+  `uvx`) — legacy fallback VLM (~15–20 s/call); superseded by `vlm` for new work.
+
+See [docs/mcp-vision.md](docs/mcp-vision.md) for tools, arguments, and when to use which.
+
 ```bash
 scripts/cameraboi snap
 scripts/cameraboi snap -d "MacBook Pro Camera" -o /tmp/desk.jpg
@@ -139,12 +155,15 @@ Full guide: [docs/troubleshooting.md](./docs/troubleshooting.md).
 - [Command Reference](./docs/command-reference.md)
 - [Using the Skill](./docs/skill-usage.md)
 - [Troubleshooting](./docs/troubleshooting.md)
+- [CV Tools](./docs/cv-tools.md)
+- [MCP Vision Servers](./docs/mcp-vision.md)
 
 ## Layout
 
 ```
 scripts/cameraboi        # the CLI — all capture logic
 skills/cameraboi/        # the Claude Code skill (SKILL.md + references/)
+bin/ocrtool-mcp          # Apple Vision OCR MCP server (release binary, v1.0.6)
 docs/                    # project documentation
 ```
 

@@ -20,6 +20,8 @@ the resulting files.
 - [Command Reference](./command-reference.md) — every command, flag, and default
 - [Using the Skill](./skill-usage.md) — how Claude drives the camera in a session
 - [Troubleshooting](./troubleshooting.md) — permissions, missing devices, `doctor`
+- [CV Tools](./cv-tools.md) — mm measurement, exact counting, scan cleanup
+- [MCP Vision Servers](./mcp-vision.md) — local OCR and VLM (Qwen3-VL on MLX) as MCP tools
 
 ## What it does
 

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# cameraboi-vlm — local VLM companion to cameraboi (describe / ask / read / find / serve).
+# Self-bootstraps a venv in vlm/.venv on first run (needs `uv`; system python is too old).
+# Same output contract as cameraboi-cv: last stdout line(s) are artifact paths,
+# diagnostics on stderr. `serve` runs the MCP server on stdio.
+set -euo pipefail
+
+_self="$0"
+[ -L "$_self" ] && _self="$(readlink "$_self")"
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd -P)"
+VLM_DIR="$SCRIPT_DIR/../vlm"
+VENV="$VLM_DIR/.venv"
+
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "cameraboi-vlm: first run — creating venv and installing requirements..." >&2
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "cameraboi-vlm: needs uv (brew install uv) — mlx-vlm requires python >= 3.10" >&2
+    exit 1
+  fi
+  uv venv --python 3.12 "$VENV" >&2
+  uv pip install --python "$VENV/bin/python" --quiet -r "$VLM_DIR/requirements.txt"
+fi
+
+cd "$VLM_DIR"
+exec "$VENV/bin/python" -m cameraboi_vlm.cli "$@"

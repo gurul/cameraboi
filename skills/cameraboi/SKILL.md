@@ -100,6 +100,48 @@ from the image — shell out to the deterministic CV CLI:
 Claude's vision judges *what* things are; `cameraboi-cv` supplies the numbers. Combine
 them: measure/count with the CLI, verify with a Read, describe with vision.
 
+## Exact text — the OCR MCP
+
+For **verbatim transcription** (serial numbers, part codes, receipts, dense pages), do
+not transcribe by eye from the Read — call the `ocr` MCP server's `ocr_extract_text`
+tool on the captured file (Apple Vision framework, local, per-line bounding boxes):
+
+- Pass the **full-res original** path (`snap --full` output), never the model copy —
+  OCR accuracy comes from pixels Claude's own vision doesn't need.
+- `format: "structured"` returns JSON with pixel bounding boxes (origin bottom-left);
+  `lang` defaults to `zh+en` — pass `"en"` (or the right codes) explicitly.
+- Best on `scan`-cleaned pages: snap → `cameraboi-cv scan` → OCR the cleaned output.
+- Eyes still matter: Read the image too, and use OCR for the characters, vision for
+  the layout and meaning. If OCR and vision disagree on a critical string, say so.
+
+If the `ocr` tools are absent (server not loaded), fall back to Reading the full-res
+capture and say the transcription is by eye, not OCR.
+
+## Localization & semantics — the vlm MCP
+
+For **"where exactly is the X"** — pixel bounding boxes of a named object — and for
+machine-readable captions/VQA, use the `vlm` MCP server (Qwen3-VL 4-bit on MLX,
+resident in memory; the first call of a session loads the model, allow ~30 s cold,
+then ~6 s per call):
+
+- `vlm_find {image_path, objects}` → open-vocabulary bounding boxes + centers **in
+  original image pixels**, plus an annotated `-vlm-find.png` written next to the
+  source. The reliable localization tool; also a semantic cross-check on
+  `cameraboi-cv count`. Pass the full-res original — coordinates are mapped back.
+- `vlm_query {image_path, question}` / `vlm_describe {image_path}` → VQA and
+  captioning; prefer Claude's own Read for judgement, `vlm` when a machine-readable
+  or coordinate-grounded answer is needed.
+- `vlm_read_text {image_path}` → transcription that handles handwriting and odd
+  layouts; use `ocr` instead when you need per-line boxes.
+- An empty `objects` result means "unlocated", not "absent" — say so.
+
+A `moondream` server may also be registered (legacy fallback, ~15–20 s/call, weak
+boxes); prefer `vlm` whenever both are present.
+
+Division of labor: Claude's vision for meaning, `vlm` for coordinates,
+`cameraboi-cv` for calibrated numbers, `ocr` for characters. VLM output estimates —
+never report its counts or sizes as exact; route those to `cameraboi-cv`.
+
 ## Device selection
 
 Default is the **IPEVO V4K** document camera. `-d` takes a case-insensitive substring or

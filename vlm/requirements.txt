@@ -1,0 +1,5 @@
+# cameraboi-vlm — local VLM inference on Apple Silicon via MLX.
+# mlx-vlm pulls in mlx, transformers, pillow, numpy; no torch needed.
+mlx-vlm==0.6.13
+# mcp 2.x dropped the bundled FastMCP server API — stay on 1.x
+mcp>=1.10,<2
