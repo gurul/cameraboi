@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PIL import Image
 
-DEFAULT_MODEL = os.environ.get("CAMERABOI_VLM_MODEL", "mlx-community/Qwen3-VL-4B-Instruct-4bit")
+DEFAULT_MODEL = os.environ.get("CAMERABOI_VLM_MODEL", "mlx-community/Qwen3.8-27B-4bit")
 
 # Long-side cap fed to the model. Matches the -model.jpg convention of the
 # capture CLI; grounding output is mapped back to original pixels afterwards.
