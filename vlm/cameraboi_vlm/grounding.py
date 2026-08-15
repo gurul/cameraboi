@@ -1,6 +1,6 @@
-"""Parse and render Qwen3-VL grounding output.
+"""Parse and render Qwen VLM grounding output (Qwen3-VL / Qwen3.8).
 
-Qwen3-VL emits boxes as JSON objects with a ``bbox_2d`` [x1, y1, x2, y2] and a
+Qwen VLMs emit boxes as JSON objects with a ``bbox_2d`` [x1, y1, x2, y2] and a
 ``label``, with coordinates in a 0-1000 space normalized to the image the model
 saw. The model wraps the JSON in markdown fences or prose often enough that the
 parser scans for objects rather than trusting the whole reply to be JSON.
