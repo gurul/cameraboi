@@ -15,7 +15,7 @@ mcp = FastMCP("cameraboi-vlm")
 
 @mcp.tool()
 def vlm_describe(image_path: str, detail: str = "short") -> str:
-    """Caption an image with a local VLM (Qwen3.8 on MLX).
+    """Caption an image with a fast local VLM (Qwen3-VL on MLX).
 
     Args:
         image_path: Absolute path to the image file.

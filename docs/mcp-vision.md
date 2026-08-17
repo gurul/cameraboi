@@ -13,7 +13,7 @@ call them as tools.
 
 | Server | Tool(s) | What it adds |
 |---|---|---|
-| `vlm` (cameraboi-vlm) | `vlm_describe`, `vlm_query`, `vlm_read_text`, `vlm_find` | **The primary semantic-vision server.** Qwen3.8-27B 4-bit on MLX — captioning, VQA, text transcription, and reliable open-vocabulary bounding boxes, resident in memory so calls after the first are fast |
+| `vlm` (cameraboi-vlm) | `vlm_describe`, `vlm_query`, `vlm_read_text`, `vlm_find` | **The primary semantic-vision server.** Qwen3-VL 4-bit on MLX — captioning, VQA, text transcription, and reliable open-vocabulary bounding boxes, resident in memory so calls after the first are fast |
 | `ocr` (ocrtool-mcp) | `ocr_extract_text` | Verbatim text extraction via the Apple Vision framework — per-line pixel bounding boxes, table/markdown/structured output |
 | `moondream` (moondream-mcp) | `caption_image`, `query_image`, `detect_objects`, `point_objects`, `analyze_image`, `batch_analyze_images` | Legacy fallback VLM (~15–20 s/call, unreliable boxes) — superseded by `vlm` for everything except `point_objects`-style center points |
 
@@ -26,20 +26,16 @@ call them as tools.
   visual questions, handwriting and scene text that defeats classical OCR.
 - **`moondream`** — kept for continuity; prefer `vlm` for new work.
 
-## cameraboi-vlm — Qwen3.8 on MLX
+## cameraboi-vlm — Qwen3-VL on MLX
 
-The `vlm` server runs **Qwen3.8-27B 4-bit** (`mlx-community/Qwen3.8-27B-4bit`, ~16 GB
-download on first call) through [MLX-VLM](https://github.com/Blaizzy/mlx-vlm),
-Apple's-silicon-native inference. The MCP process stays resident, so the model loads once
-per session and subsequent calls skip the load entirely — this is the main speed win over
-spawning a CLI per call.
+The `vlm` server runs **Qwen3-VL-4B-Instruct 4-bit** (~2.3 GB download on first call)
+through [MLX-VLM](https://github.com/Blaizzy/mlx-vlm), Apple's-silicon-native inference.
+The MCP process stays resident, so the model loads once per session and subsequent calls
+skip the load entirely — this is the main speed win over spawning a CLI per call.
 
-The 27B default trades per-call speed for capability; it needs a 32 GB+ machine (the
-4-bit weights are ~15 GB resident). The previous default, `Qwen3-VL-4B-Instruct-4bit`,
-was verified on an M5 / 32 GB against real captures at `describe` 5.7 s / `find` 6.8 s
+Verified on an M5 / 32 GB against real captures: `describe` 5.7 s, `find` 6.8 s
 inference, with grounding boxes landing pixel-tight on a PCB and all four mat markers —
-including one under a strong specular reflection; expect the 27B model to be
-substantially slower per call.
+including one under a strong specular reflection.
 
 - `vlm_describe(image_path, detail)` — captioning; `detail: "short" | "long"`.
 - `vlm_query(image_path, question)` — free-form VQA.
@@ -59,11 +55,11 @@ scripts/cameraboi-vlm serve   # what .mcp.json runs — MCP over stdio
 
 First run bootstraps a private venv in `vlm/.venv` via `uv` (system Python is too old for
 `mlx-vlm`, which needs ≥3.10). Model override: `CAMERABOI_VLM_MODEL` env var — any
-MLX-format VLM works, e.g. `mlx-community/Qwen3-VL-4B-Instruct-4bit` (~2.3 GB) for the
-fast/light tier on smaller machines.
+MLX-format VLM works, e.g. `mlx-community/Qwen3-VL-8B-Instruct-4bit` (~4.5 GB) for the
+quality tier on 32 GB+ machines.
 
 > [!NOTE]
-> Grounding coordinates: Qwen VLMs emit boxes in a 0–1000 normalized space; the server
+> Grounding coordinates: Qwen3-VL emits boxes in a 0–1000 normalized space; the server
 > denormalizes to original pixels and clamps to the frame. An empty `objects` array means
 > "not located", not "absent".
 

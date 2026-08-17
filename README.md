@@ -91,9 +91,9 @@ Three local MCP servers (registered in the workspace `.mcp.json`) round out the 
 stack — no API keys, captures never leave the machine:
 
 - **`vlm`** (`scripts/cameraboi-vlm serve`) — the primary semantic-vision server:
-  Qwen3.8-27B 4-bit on [MLX-VLM](https://github.com/Blaizzy/mlx-vlm), resident in memory.
-  Captioning, VQA, text transcription, and reliable open-vocabulary bounding boxes on
-  Apple Silicon (set `CAMERABOI_VLM_MODEL` to a smaller MLX VLM for the speed tier).
+  Qwen3-VL 4-bit on [MLX-VLM](https://github.com/Blaizzy/mlx-vlm), resident in memory.
+  Captioning, VQA, text transcription, and reliable open-vocabulary bounding boxes in
+  ~6 s per call on Apple Silicon.
 - **`ocr`** ([ocrtool-mcp](https://github.com/ihugang/ocrtool-mcp), `bin/ocrtool-mcp`) —
   verbatim text extraction via the Apple Vision framework, with per-line bounding boxes.
 - **`moondream`** ([moondream-mcp](https://github.com/ColeMurray/moondream-mcp), via

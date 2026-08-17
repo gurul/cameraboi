@@ -24,7 +24,9 @@ readonly DEFAULT_DEVICE="IPEVO V4K"
 # default for video recording, where encode cost and fps caps make 1080p right.
 readonly DEFAULT_SIZE="1920x1080"
 readonly DEFAULT_FPS="30"
-readonly DEFAULT_WARMUP="15"
+# 40 frames (~2.7s at 15fps) — auto-exposure needs well over 1s to converge
+# from a cold start; a short warmup leaves stills visibly overexposed.
+readonly DEFAULT_WARMUP="40"
 readonly DEFAULT_PIXFMT="uyvy422"
 readonly CAPTURE_DIR="${CAMERABOI_DIR:-$HOME/Pictures/cameraboi}"
 readonly SHEET_MAX_WIDTH=2000
@@ -109,6 +111,34 @@ autofocus_enable() {
     swiftc -O -o "$AF_BIN" "$AF_SRC" 2>/dev/null || { log "note: autofocus helper build failed; skipping"; return 0; }
   fi
   "$AF_BIN" || log "note: autofocus helper failed; capturing anyway"
+  return 0
+}
+
+# Adaptive white-point correction for stills, scanner-style: the V4K's AE can
+# settle anywhere, leaving the dominant bright surface (usually paper) dingy.
+# Probe the 90th-percentile luma and, when it sits below white, curve it up to
+# ~242 — compressing brighter values smoothly instead of clipping them. A
+# specular highlight cannot defeat a percentile the way it defeats a min/max
+# stretch. Stretch is capped at ~1.35x so non-document scenes are not nuked.
+# In-place on a JPEG; silently skipped on probe failure or when already white.
+tone_correct() {
+  local img="$1" yhigh wp
+  yhigh="$(ffmpeg -v error -i "$img" -vf 'signalstats,metadata=print:file=-' \
+             -frames:v 1 -f null - 2>/dev/null |
+           awk -F= '/YHIGH/ { print int($2); exit }')" || true
+  [[ "$yhigh" =~ ^[0-9]+$ ]] || return 0
+  [ "$yhigh" -ge 235 ] && return 0
+  [ "$yhigh" -lt 179 ] && yhigh=179   # cap gain at ~1.35x
+  wp="$(awk -v y="$yhigh" 'BEGIN { printf "%.4f", y / 255 }')"
+  local tmp="${img%.*}.tone.$$.jpg"
+  if ffmpeg -v error -nostdin -i "$img" \
+       -vf "curves=all='0/0 ${wp}/0.95 1/1'" -q:v 2 -y "$tmp" 2>/dev/null \
+     && [ -s "$tmp" ]; then
+    mv -f "$tmp" "$img"
+    log "tone: white point ${yhigh} -> 242"
+  else
+    rm -f "$tmp"
+  fi
   return 0
 }
 
@@ -387,14 +417,20 @@ cmd_snap() {
   autofocus_enable
   log "snap: device='$device' ${size}@${fps}fps warmup=${warmup} -> $out"
   # shellcheck disable=SC2086 # qargs is a deliberate word-split option pair
+  # Treat the uyvy422 input as FULL range: swscale's limited-range default
+  # would re-expand 16-235 -> 0-255 and clip every value above 235 to pure
+  # white, destroying highlight texture whenever AE sits bright.
   if ! run_ffmpeg "still capture" -- \
       -f avfoundation -framerate "$fps" -video_size "$size" \
       -pixel_format "$DEFAULT_PIXFMT" -i "$device" \
+      -vf "scale=in_range=full:out_range=full" \
       -frames:v "$warmup" -update 1 $qargs -y "$out"; then
     tcc_guidance
     exit 1
   fi
   [ -s "$out" ] || { log "$PROG: capture produced an empty file"; exit 1; }
+
+  tone_correct "$out"
 
   [ "$no_open" -eq 0 ] && open_preview "$out"
 
@@ -466,6 +502,7 @@ cmd_record() {
       -f avfoundation -framerate "$fps" -video_size "$size" \
       -pixel_format "$DEFAULT_PIXFMT" -i "$input" \
       -t "$secs" \
+      -vf "scale=in_range=full:out_range=full,normalize=smoothing=30:independence=0:strength=0.7" \
       -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p -r "$fps" \
       $aargs -movflags +faststart -y "$out"; then
     tcc_guidance

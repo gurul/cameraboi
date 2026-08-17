@@ -120,9 +120,9 @@ capture and say the transcription is by eye, not OCR.
 ## Localization & semantics — the vlm MCP
 
 For **"where exactly is the X"** — pixel bounding boxes of a named object — and for
-machine-readable captions/VQA, use the `vlm` MCP server (Qwen3.8-27B 4-bit on MLX,
-resident in memory; the first-ever call downloads ~16 GB, the first call of a session
-loads the model — allow minutes cold, then several seconds per call):
+machine-readable captions/VQA, use the `vlm` MCP server (Qwen3-VL 4-bit on MLX,
+resident in memory; the first call of a session loads the model, allow ~30 s cold,
+then ~6 s per call):
 
 - `vlm_find {image_path, objects}` → open-vocabulary bounding boxes + centers **in
   original image pixels**, plus an annotated `-vlm-find.png` written next to the
