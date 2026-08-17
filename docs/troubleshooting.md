@@ -114,6 +114,13 @@ this. In difficult light, give it longer:
 scripts/cameraboi snap --warmup 30
 ```
 
+Blown-out highlights (paper rendered pure white with no texture) are almost always
+auto-exposure caught mid-convergence, not a pipeline bug: the sensor starts hot and needs
+a couple of seconds to settle, which is why the default warm-up is 40 frames (~2.7 s).
+Apps with a live preview (Photo Booth) look better simply because AE has been converging
+the whole time the preview was open. If a capture still looks hot, raise `--warmup`
+further — the last warm-up frame is the one that is kept.
+
 Stills already capture at the camera's highest advertised (native) resolution by default.
 If a capture comes out no larger than 1920x1080, the camera's firmware does not advertise
 a higher still mode — the native-mode probe degrades gracefully rather than failing, so

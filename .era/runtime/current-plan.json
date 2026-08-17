@@ -1,25 +1,17 @@
 {
-  "recorded_at": "2026-08-07T22:10:02.160Z",
+  "recorded_at": "2026-08-14T00:18:20.971Z",
   "steps": [
     {
-      "name": "evaluate",
-      "estimate_minutes": 10
-    },
-    {
-      "name": "implement-cli",
-      "estimate_minutes": 25
-    },
-    {
-      "name": "implement-skill",
-      "estimate_minutes": 15
+      "name": "implement",
+      "estimate_minutes": 60
     },
     {
       "name": "test",
-      "estimate_minutes": 10
+      "estimate_minutes": 25
     },
     {
       "name": "validate",
-      "estimate_minutes": 5
+      "estimate_minutes": 20
     }
   ]
 }
