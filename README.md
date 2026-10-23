@@ -2,13 +2,14 @@
 
 ![cameraBoi — physical vision for Claude Code](docs/assets/hero.png)
 
-**Physical vision for Claude Code.** A Claude Code skill plus a single bash CLI that lets a
-Claude session take a photo, record a clip, or watch a scene through the camera attached to
-your Mac — and then actually look at what it captured.
+**Any camera as a tool call.** A Claude Code skill plus a single bash CLI that lets a
+Claude session take a photo, record a clip, or watch a scene through any camera on your
+Mac — and then actually look at what it captured.
 
-Built around an [IPEVO V4K](https://www.ipevo.com/) document camera by default, but any
-AVFoundation device works, including the built-in MacBook camera. macOS only; `ffmpeg` is
-the only dependency — no build step, no package manager, no runtime beyond bash.
+Works with any AVFoundation device: the built-in MacBook camera, a webcam, a document
+camera (the defaults were tuned on an [IPEVO V4K](https://www.ipevo.com/)), or a capture
+card. macOS only; `ffmpeg` is the only dependency — no build step, no package manager, no
+runtime beyond bash.
 
 ## Quick start
 
